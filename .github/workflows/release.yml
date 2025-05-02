@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 1.0.0)'
+        required: true
+        type: string
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    strategy:
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            build_cmd: gogio -target macos -arch arm64 -icon appicon.png -o "Excel Translator.app" .
+            artifact_name: "Excel Translator.app"
+            artifact_path: excel-translator-macos-arm64.zip
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            build_cmd: gogio -target macos -arch amd64 -icon appicon.png -o "Excel Translator.app" .
+            artifact_name: "Excel Translator.app"
+            artifact_path: excel-translator-macos-amd64.zip
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            build_cmd: gogio -target windows -arch amd64 -icon appicon.png -o "Excel Translator.exe" .
+            artifact_name: "Excel Translator.exe"
+            artifact_path: "Excel-Translator.exe"
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '^1.24'
+          cache: true
+
+      - name: Install dependencies
+        run: |
+          go install gioui.org/cmd/gogio@latest
+          go mod download
+
+      - name: Build application
+        run: ${{ matrix.build_cmd }}
+
+      - name: Package Macos apps
+        if: matrix.platform == 'macos-latest'
+        run: zip -r "${{ matrix.artifact_path }}" "${{ matrix.artifact_name }}"
+
+      - name: Rename Windows artifact
+        if: matrix.platform == 'windows-latest'
+        shell: cmd
+        run: move "${{ matrix.artifact_name }}" "${{ matrix.artifact_path }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_path }}
+          path: ${{ matrix.artifact_path }}
+          if-no-files-found: error
+
+      - name: Create Release
+        if: github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.artifact_path }}
+          name: Release ${{ github.event.inputs.version }}
+          tag_name: ${{ github.event.inputs.version }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

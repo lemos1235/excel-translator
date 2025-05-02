@@ -1,0 +1,32 @@
+# 文档文件
+*.doc
+*.docx
+*.xls
+*.xlsx
+*.ppt
+*.pptx
+*.pdf
+*.txt
+*.rtf
+*.odt
+*.ods
+*.odp
+*.pages
+*.numbers
+*.key
+*.tex
+*.log
+
+# 临时文件
+*.tmp
+*.temp
+~$*
+._*
+.DS_Store
+Thumbs.db
+bin/
+out/
+
+# 开发工具
+.idea/
+.vscode/
