@@ -127,7 +127,7 @@ func getCellsForTranslation(f *excelize.File) []TranslationTask {
 }
 
 // translateCellsWithClient 翻译单元格内容（使用已初始化的客户端）
-func translateCellsWithClient(tasks []TranslationTask, client *openai.Client, cfg *config.Config, callback func(original, translated string)) []TranslationResult {
+func translateCellsWithClient(tasks []TranslationTask, client *openai.Client, cfg *config.Config, onTranslated func(original, translated string)) []TranslationResult {
 	var wg sync.WaitGroup
 	taskChan := make(chan TranslationTask, len(tasks))
 	resultChan := make(chan TranslationResult, len(tasks))
@@ -154,9 +154,7 @@ func translateCellsWithClient(tasks []TranslationTask, client *openai.Client, cf
 
 					translatedText, err := TranslateTextWithClient(client, task.OriginalText, cfg)
 					if err == nil {
-						if callback != nil {
-							callback(task.OriginalText, translatedText)
-						}
+						onTranslated(task.OriginalText, translatedText)
 					}
 					return translatedText, err
 				}()

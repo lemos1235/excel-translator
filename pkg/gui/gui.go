@@ -1,6 +1,7 @@
 package gui
 
 import (
+	"errors"
 	"image"
 	"image/color"
 	"io"
@@ -158,8 +159,14 @@ func run(state *guiState) error {
 		case res := <-state.fileOpResultChan: // 处理文件选择/创建结果
 			if res.err != nil {
 				state.processing = false // 操作失败或取消
-				if res.err == explorer.ErrUserDecline {
+				if errors.Is(res.err, explorer.ErrUserDecline) {
 					state.status = "已取消"
+					state.tempFile = ""
+					state.inputTempFile = ""
+					state.originalFilename = ""
+					state.translatedName = ""
+					state.currentOriginal = ""
+					state.currentTranslated = ""
 				} else {
 					state.status = "操作失败: " + res.err.Error()
 				}
@@ -389,6 +396,8 @@ func run(state *guiState) error {
 					state.savePending = false
 					state.translationDone = false
 					state.status = ""
+					state.currentOriginal = ""
+					state.currentTranslated = ""
 					state.window.Invalidate()
 				}
 
@@ -410,6 +419,7 @@ func run(state *guiState) error {
 						err := state.processFunc(inputFile, tempFile, func(original, translated string) {
 							state.currentOriginal = original
 							state.currentTranslated = translated
+							log.Printf("original %s, translated %s", original, translated)
 							state.window.Invalidate()
 						})
 						state.processResultChan <- err
