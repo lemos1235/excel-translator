@@ -2,15 +2,6 @@ package gui
 
 import (
 	"errors"
-	"image"
-	"image/color"
-	"io"
-	"log"
-	"os"
-	"path/filepath"
-	"strings"
-	"time"
-
 	"gioui.org/app"
 	"gioui.org/io/key"
 	"gioui.org/io/system"
@@ -23,6 +14,14 @@ import (
 	"gioui.org/widget"
 	"gioui.org/widget/material"
 	"gioui.org/x/explorer"
+	"image"
+	"image/color"
+	"io"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
 )
 
 // FileOpType 指定文件操作的类型
@@ -138,11 +137,12 @@ func getTranslatedFilename(filename string) string {
 	}
 
 	ext := filepath.Ext(filename)
-	baseWithoutExt := strings.TrimSuffix(filename, ext)
+	baseWithoutExt := strings.ReplaceAll(filename, ext, "")
 
 	// 限制基础文件名长度，避免生成过长的文件名
-	if len(baseWithoutExt) > 30 {
-		baseWithoutExt = baseWithoutExt[:27] + "..."
+	runes := []rune(baseWithoutExt)
+	if len(runes) > 50 {
+		baseWithoutExt = string(runes[:50])
 	}
 
 	return baseWithoutExt + "_译文" + ext
