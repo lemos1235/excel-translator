@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"exceltranslator/config"
 	"exceltranslator/pkg/excel"
@@ -31,6 +32,39 @@ type TranslationResult struct {
 	Error          error  // 错误信息
 }
 
+// CacheManager 缓存管理器接口
+type CacheManager interface {
+	Get(key string) (string, bool)
+	Set(key, value string)
+}
+
+// MemoryCache 内存缓存实现
+type MemoryCache struct {
+	cache *sync.Map
+}
+
+// NewMemoryCache 创建新的内存缓存
+func NewMemoryCache() *MemoryCache {
+	return &MemoryCache{
+		cache: &sync.Map{},
+	}
+}
+
+// Get 获取缓存值
+func (m *MemoryCache) Get(key string) (string, bool) {
+	if v, ok := m.cache.Load(key); ok {
+		if cached, ok2 := v.(string); ok2 {
+			return cached, true
+		}
+	}
+	return "", false
+}
+
+// Set 设置缓存值
+func (m *MemoryCache) Set(key, value string) {
+	m.cache.Store(key, value)
+}
+
 // ProcessExcelFile 处理单个 Excel 文件的翻译
 func ProcessExcelFile(inputFile, outputFile string, onTranslated func(original, translated string)) error {
 	log.Println("开始翻译")
@@ -41,6 +75,9 @@ func ProcessExcelFile(inputFile, outputFile string, onTranslated func(original, 
 		log.Printf("加载配置文件时出错: %v", err)
 		return err
 	}
+
+	// 初始化缓存管理器
+	cache := NewMemoryCache()
 
 	// 初始化 OpenAI 客户端（只初始化一次）
 	openaiClient := openai.NewClient(
@@ -67,21 +104,25 @@ func ProcessExcelFile(inputFile, outputFile string, onTranslated func(original, 
 		return nil
 	}
 
+	log.Printf("找到 %d 个需要翻译的单元格", len(tasks))
+
 	// 执行翻译
-	results := translateCellsWithClient(tasks, &openaiClient, cfg, onTranslated)
+	startTime := time.Now()
+	results := translateCellsWithClient(tasks, &openaiClient, cfg, cache, onTranslated)
+	elapsedTime := time.Since(startTime)
 
 	// 更新 Excel 文件中的翻译
 	updateExcelWithTranslations(f, results)
 
 	// 保存输出 Excel 文件
 	if err := f.SaveAs(outputFile); err != nil {
-		log.Fatalf("保存输出文件 '%s' 时出错: %v", outputFile, err)
+		return fmt.Errorf("保存输出文件 '%s' 时出错: %w", outputFile, err)
 	}
 
 	// 处理形状中的文本翻译
 	shapeTranslator := excel.NewShapeTranslator()
 	if err := shapeTranslator.TranslateShapes(outputFile, outputFile, func(text string) (string, error) {
-		translatedText, err := TranslateTextWithClient(&openaiClient, text, cfg)
+		translatedText, err := TranslateTextWithClient(&openaiClient, text, cfg, cache)
 		if err == nil {
 			onTranslated(text, translatedText)
 		}
@@ -90,13 +131,13 @@ func ProcessExcelFile(inputFile, outputFile string, onTranslated func(original, 
 		log.Printf("处理形状翻译时出错: %v", err)
 	}
 
-	log.Println("翻译任务已完成")
+	log.Printf("翻译任务已完成，耗时: %v", elapsedTime)
 	return nil
 }
 
 // getCellsForTranslation 识别需要翻译的单元格
 func getCellsForTranslation(f *excelize.File) []TranslationTask {
-	tasks := []TranslationTask{}
+	var tasks []TranslationTask
 	sheets := f.GetSheetList()
 
 	totalCellsChecked := 0
@@ -110,7 +151,11 @@ func getCellsForTranslation(f *excelize.File) []TranslationTask {
 		for r, row := range rows {
 			for c, cellValue := range row {
 				totalCellsChecked++
-				cellCoord, _ := excelize.CoordinatesToCellName(c+1, r+1) // excelize 是从 1 开始的
+				cellCoord, err := excelize.CoordinatesToCellName(c+1, r+1) // excelize 是从 1 开始的
+				if err != nil {
+					log.Printf("警告: 无法转换坐标 (%d, %d): %v", c+1, r+1, err)
+					continue
+				}
 
 				// 仅翻译非空字符串单元格
 				if strings.TrimSpace(cellValue) != "" {
@@ -127,17 +172,18 @@ func getCellsForTranslation(f *excelize.File) []TranslationTask {
 }
 
 // translateCellsWithClient 翻译单元格内容（使用已初始化的客户端）
-func translateCellsWithClient(tasks []TranslationTask, client *openai.Client, cfg *config.Config, onTranslated func(original, translated string)) []TranslationResult {
+func translateCellsWithClient(tasks []TranslationTask, client *openai.Client, cfg *config.Config, cache CacheManager, onTranslated func(original, translated string)) []TranslationResult {
 	var wg sync.WaitGroup
 	taskChan := make(chan TranslationTask, len(tasks))
 	resultChan := make(chan TranslationResult, len(tasks))
 	sem := semaphore.NewWeighted(int64(cfg.Client.MaxConcurrentRequests))
 	results := make([]TranslationResult, 0, len(tasks))
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	// 启动工作 goroutine
-	for i := range cfg.Client.MaxConcurrentRequests {
+	for i := 0; i < cfg.Client.MaxConcurrentRequests; i++ {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
@@ -152,7 +198,7 @@ func translateCellsWithClient(tasks []TranslationTask, client *openai.Client, cf
 					// 使用 defer 释放信号量
 					defer sem.Release(1)
 
-					translatedText, err := TranslateTextWithClient(client, task.OriginalText, cfg)
+					translatedText, err := TranslateTextWithClient(client, task.OriginalText, cfg, cache)
 					if err == nil {
 						onTranslated(task.OriginalText, translatedText)
 					}
@@ -234,7 +280,7 @@ func IsCJKText(text string) bool {
 }
 
 // TranslateTextWithClient 将文本发送到 OpenAI 进行翻译（使用已初始化的客户端）
-func TranslateTextWithClient(client *openai.Client, textToTranslate string, cfg *config.Config) (string, error) {
+func TranslateTextWithClient(client *openai.Client, textToTranslate string, cfg *config.Config, cache CacheManager) (string, error) {
 	if strings.TrimSpace(textToTranslate) == "" {
 		return "", nil // 没有需要翻译的内容
 	}
@@ -242,6 +288,11 @@ func TranslateTextWithClient(client *openai.Client, textToTranslate string, cfg 
 	// 如果启用了自动检测CJK，且文本不包含CJK字符，直接返回原文
 	if cfg.Client.AutoDetectCJK && !IsCJKText(textToTranslate) {
 		return textToTranslate, nil
+	}
+
+	// 检查缓存
+	if cached, ok := cache.Get(textToTranslate); ok {
+		return cached, nil
 	}
 
 	resp, err := client.Chat.Completions.New(context.Background(),
@@ -259,7 +310,10 @@ func TranslateTextWithClient(client *openai.Client, textToTranslate string, cfg 
 
 	if len(resp.Choices) > 0 && resp.Choices[0].Message.Content != "" {
 		// 去除 API 响应中可能的前导/尾随空白或换行符
-		return strings.TrimSpace(resp.Choices[0].Message.Content), nil
+		translated := strings.TrimSpace(resp.Choices[0].Message.Content)
+		// 写入缓存
+		cache.Set(textToTranslate, translated)
+		return translated, nil
 	}
 
 	return "", fmt.Errorf("OpenAI 返回了空的翻译")
