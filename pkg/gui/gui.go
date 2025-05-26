@@ -78,7 +78,6 @@ func CreateGUI(processFunc func(inputFile, outputFile string, onTranslated func(
 			app.Title("Excel 翻译器"),
 			app.Size(unit.Dp(350), unit.Dp(250)), // 减小窗口高度使界面更紧凑
 		)
-
 		// 创建自定义主题以设置背景色
 		t := material.NewTheme()
 		t.Bg = color.NRGBA{R: 0xE8, G: 0xE8, B: 0xE8, A: 0xFF} // 设置背景色为 #E8E8E8
@@ -100,9 +99,6 @@ func CreateGUI(processFunc func(inputFile, outputFile string, onTranslated func(
 			currentOriginal:   "",
 			currentTranslated: "",
 		}
-
-		// 窗口初始化后居中显示
-		w.Perform(system.ActionCenter)
 
 		if err := run(&state); err != nil {
 			log.Fatal(err)
@@ -428,9 +424,6 @@ func run(state *guiState) error {
 					}(state.inputTempFile, state.tempFile)
 				}
 			}
-
-			// 填充整个窗口背景
-			drawBackground(gtx, state.theme.Bg)
 
 			// 渲染UI
 			renderUI(gtx, state)
