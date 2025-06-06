@@ -24,14 +24,10 @@
 [client]
 # 最大并发请求数
 max_concurrent_requests = 5
-# 翻译提示词
-prompt = """
-你是一个专业的翻译助手，擅长将日文精准翻译成简体中文。
-请直接返回翻译结果，不要添加任何解释或引导语。
-在翻译过程中保持所有西文字符（字母、数字、符号）不变，并确保专业术语的准确性。
-"""
 # 是否自动检测中日韩文字（仅翻译包含中日韩文字的文本）
 auto_detect_cjk = true
+# 翻译提示词
+prompt = 'You are a professional translator. Translate Japanese to Simplified Chinese directly. Keep all alphanumeric characters unchanged. Ensure accuracy of technical terms. No explanations needed.'
 
 # 大语言模型设置
 [llm]

@@ -13,7 +13,7 @@ PLATFORM_LIST = \
 WINDOWS_ARCH_LIST = \
 	windows-amd64
 
-gui:
+darwin-gui:
 	gogio -target macos -arch arm64 -icon appicon.png -o $(APPDIR)/$(APPNAME) $(GOFILES)
 
 darwin-amd64:

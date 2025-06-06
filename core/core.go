@@ -9,48 +9,31 @@ import (
 	"time"
 
 	"exceltranslator/config"
-	"exceltranslator/pkg/excel"
+	"exceltranslator/excel"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
-	"github.com/xuri/excelize/v2"
-	"golang.org/x/sync/semaphore"
 )
 
-// TranslationTask 保存单个单元格翻译的信息
-type TranslationTask struct {
-	Sheet        string // 工作表名称
-	CellCoord    string // 单元格坐标
-	OriginalText string // 原始文本
-}
-
-// TranslationResult 保存翻译结果
-type TranslationResult struct {
-	Sheet          string // 工作表名称
-	CellCoord      string // 单元格坐标
-	TranslatedText string // 翻译后的文本
-	Error          error  // 错误信息
-}
-
-// CacheManager 缓存管理器接口
+// CacheManager 定义缓存接口
 type CacheManager interface {
 	Get(key string) (string, bool)
 	Set(key, value string)
 }
 
-// MemoryCache 内存缓存实现
+// MemoryCache 是 CacheManager 的内存实现
 type MemoryCache struct {
 	cache *sync.Map
 }
 
-// NewMemoryCache 创建新的内存缓存
+// NewMemoryCache 创建一个新的内存缓存
 func NewMemoryCache() *MemoryCache {
 	return &MemoryCache{
 		cache: &sync.Map{},
 	}
 }
 
-// Get 获取缓存值
+// Get 从缓存中获取值
 func (m *MemoryCache) Get(key string) (string, bool) {
 	if v, ok := m.cache.Load(key); ok {
 		if cached, ok2 := v.(string); ok2 {
@@ -60,215 +43,130 @@ func (m *MemoryCache) Get(key string) (string, bool) {
 	return "", false
 }
 
-// Set 设置缓存值
+// Set 向缓存中添加值
 func (m *MemoryCache) Set(key, value string) {
 	m.cache.Store(key, value)
 }
 
-// ProcessExcelFile 处理单个 Excel 文件的翻译
+// Translator 封装翻译逻辑和状态
+type Translator struct {
+	cfg          *config.Config
+	openaiClient *openai.Client
+	cache        CacheManager
+	onTranslated func(original, translated string)
+}
+
+// NewTranslator 创建一个新的翻译器实例
+func NewTranslator(cfg *config.Config, onTranslated func(original, translated string)) (*Translator, error) {
+	client := openai.NewClient(
+		option.WithBaseURL(cfg.LLM.APIURL),
+		option.WithAPIKey(cfg.LLM.APIKey),
+	)
+	return &Translator{
+		cfg:          cfg,
+		openaiClient: &client,
+		cache:        NewMemoryCache(),
+		onTranslated: onTranslated,
+	}, nil
+}
+
+// ProcessExcelFile 是翻译 Excel 文件的主入口点
 func ProcessExcelFile(inputFile, outputFile string, onTranslated func(original, translated string)) error {
 	log.Println("开始翻译")
+	startTime := time.Now()
 
 	// 加载配置
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		log.Printf("加载配置文件时出错: %v", err)
+		log.Printf("加载配置时出错: %v", err)
 		return err
 	}
 
-	// 初始化缓存管理器
-	cache := NewMemoryCache()
-
-	// 初始化 OpenAI 客户端（只初始化一次）
-	openaiClient := openai.NewClient(
-		option.WithBaseURL(cfg.LLM.APIURL),
-		option.WithAPIKey(cfg.LLM.APIKey),
-	)
-
-	// 打开输入 Excel 文件
-	f, err := excelize.OpenFile(inputFile)
+	// 创建新的翻译器
+	translator, err := NewTranslator(cfg, onTranslated)
 	if err != nil {
-		log.Printf("打开输入 Excel 文件 '%s' 时出错: %v", inputFile, err)
+		log.Printf("创建翻译器时出错: %v", err)
 		return err
 	}
-	defer func() {
-		if err := f.Close(); err != nil {
-			log.Printf("警告: 关闭输入文件时出错: %v", err)
-		}
-	}()
 
-	// 识别需要翻译的单元格
-	tasks := getCellsForTranslation(f)
-	if len(tasks) == 0 {
-		log.Println("未找到需要翻译的文本单元格")
-		return nil
-	}
+	err = translator.ProcessFile(inputFile, outputFile)
 
-	log.Printf("找到 %d 个需要翻译的单元格", len(tasks))
-
-	// 执行翻译
-	startTime := time.Now()
-	results := translateCellsWithClient(tasks, &openaiClient, cfg, cache, onTranslated)
 	elapsedTime := time.Since(startTime)
-
-	// 更新 Excel 文件中的翻译
-	updateExcelWithTranslations(f, results)
-
-	// 保存输出 Excel 文件
-	if err := f.SaveAs(outputFile); err != nil {
-		return fmt.Errorf("保存输出文件 '%s' 时出错: %w", outputFile, err)
+	if err != nil {
+		log.Printf("翻译任务失败，耗时: %v. 错误: %v", elapsedTime, err)
+	} else {
+		log.Printf("翻译任务完成，耗时: %v", elapsedTime)
 	}
+	return err
+}
 
-	// 处理形状中的文本翻译
-	shapeTranslator := excel.NewShapeTranslator()
-	if err := shapeTranslator.TranslateShapes(outputFile, outputFile, func(text string) (string, error) {
-		translatedText, err := TranslateTextWithClient(&openaiClient, text, cfg, cache)
-		if err == nil {
-			onTranslated(text, translatedText)
+// ProcessFile 处理单个 Excel 文件的翻译
+func (t *Translator) ProcessFile(inputFile, outputFile string) error {
+	// Cells 翻译
+	cellTranslator := excel.NewCellTranslator(t.cfg.Client.MaxConcurrentRequests)
+	cellTranslator.TranslateCells(inputFile, outputFile, func(text string) (string, error) {
+		translatedText, err := t.TranslateText(text)
+		if err == nil && t.onTranslated != nil {
+			t.onTranslated(text, translatedText)
 		}
 		return translatedText, err
-	}); err != nil {
-		log.Printf("处理形状翻译时出错: %v", err)
-	}
+	})
 
-	log.Printf("翻译任务已完成，耗时: %v", elapsedTime)
+	// Shapes 翻译
+	shapeTranslator := excel.NewShapeTranslator(t.cfg.Client.MaxConcurrentRequests)
+	shapeTranslator.TranslateShapes(outputFile, outputFile, func(text string) (string, error) {
+		translatedText, err := t.TranslateText(text)
+		if err == nil && t.onTranslated != nil {
+			t.onTranslated(text, translatedText)
+		}
+		return translatedText, err
+	})
+
 	return nil
 }
 
-// getCellsForTranslation 识别需要翻译的单元格
-func getCellsForTranslation(f *excelize.File) []TranslationTask {
-	var tasks []TranslationTask
-	sheets := f.GetSheetList()
-
-	totalCellsChecked := 0
-	for _, sheetName := range sheets {
-		rows, err := f.GetRows(sheetName) // 获取所有包含数据的行
-		if err != nil {
-			log.Printf("警告: 无法获取工作表 '%s' 的行: %v", sheetName, err)
-			continue
-		}
-
-		for r, row := range rows {
-			for c, cellValue := range row {
-				totalCellsChecked++
-				cellCoord, err := excelize.CoordinatesToCellName(c+1, r+1) // excelize 是从 1 开始的
-				if err != nil {
-					log.Printf("警告: 无法转换坐标 (%d, %d): %v", c+1, r+1, err)
-					continue
-				}
-
-				// 仅翻译非空字符串单元格
-				if strings.TrimSpace(cellValue) != "" {
-					tasks = append(tasks, TranslationTask{
-						Sheet:        sheetName,
-						CellCoord:    cellCoord,
-						OriginalText: cellValue,
-					})
-				}
-			}
-		}
-	}
-	return tasks
-}
-
-// translateCellsWithClient 翻译单元格内容（使用已初始化的客户端）
-func translateCellsWithClient(tasks []TranslationTask, client *openai.Client, cfg *config.Config, cache CacheManager, onTranslated func(original, translated string)) []TranslationResult {
-	var wg sync.WaitGroup
-	taskChan := make(chan TranslationTask, len(tasks))
-	resultChan := make(chan TranslationResult, len(tasks))
-	sem := semaphore.NewWeighted(int64(cfg.Client.MaxConcurrentRequests))
-	results := make([]TranslationResult, 0, len(tasks))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// 启动工作 goroutine
-	for i := 0; i < cfg.Client.MaxConcurrentRequests; i++ {
-		wg.Add(1)
-		go func(workerID int) {
-			defer wg.Done()
-			for task := range taskChan {
-				// 获取信号量
-				if err := sem.Acquire(ctx, 1); err != nil {
-					log.Printf("获取信号量失败: %v", err)
-					continue
-				}
-
-				translatedText, err := func() (string, error) {
-					// 使用 defer 释放信号量
-					defer sem.Release(1)
-
-					translatedText, err := TranslateTextWithClient(client, task.OriginalText, cfg, cache)
-					if err == nil {
-						onTranslated(task.OriginalText, translatedText)
-					}
-					return translatedText, err
-				}()
-
-				resultChan <- TranslationResult{
-					Sheet:          task.Sheet,
-					CellCoord:      task.CellCoord,
-					TranslatedText: translatedText,
-					Error:          err,
-				}
-			}
-		}(i)
+// TranslateText 将文本发送到翻译 API
+func (t *Translator) TranslateText(textToTranslate string) (string, error) {
+	if strings.TrimSpace(textToTranslate) == "" {
+		return "", nil // 没有内容需要翻译
 	}
 
-	// 将任务发送到通道
-	for _, task := range tasks {
-		taskChan <- task
-	}
-	close(taskChan)
-
-	// 等待所有工作进程完成
-	wg.Wait()
-	close(resultChan)
-
-	// 收集结果
-	for result := range resultChan {
-		results = append(results, result)
+	// 如果启用了自动检测 CJK，且文本不包含 CJK 字符，则返回原文
+	if t.cfg.Client.AutoDetectCJK && !IsCJKText(textToTranslate) {
+		return textToTranslate, nil
 	}
 
-	return results
-}
-
-// updateExcelWithTranslations 更新 Excel 文件中的翻译内容
-func updateExcelWithTranslations(f *excelize.File, results []TranslationResult) {
-	translatedCount := 0
-	errorCount := 0
-	updateErrors := 0
-
-	for _, result := range results {
-		if result.Error != nil {
-			errorCount++
-			log.Printf("翻译单元格 %s:%s 时出错: %v", result.Sheet, result.CellCoord, result.Error)
-			// 跳过错误单元格，保留原文
-		} else if result.TranslatedText != "" {
-			err := f.SetCellValue(result.Sheet, result.CellCoord, result.TranslatedText)
-			if err != nil {
-				updateErrors++
-				log.Printf("更新 Excel 对象中的单元格 %s:%s 时出错: %v", result.Sheet, result.CellCoord, err)
-			} else {
-				translatedCount++
-			}
-		}
-		// 如果翻译文本为空（例如，输入只是空白），则不执行任何操作，保留原文
+	// 检查缓存
+	if cached, ok := t.cache.Get(textToTranslate); ok {
+		return cached, nil
 	}
 
-	log.Printf("翻译摘要：%d 个单元格成功翻译，%d 个 API 错误，%d 个 Excel 更新错误。", translatedCount, errorCount, updateErrors)
-	if errorCount > 0 {
-		log.Println("警告：由于 API 错误，某些单元格无法翻译。已保留原文。")
+	resp, err := t.openaiClient.Chat.Completions.New(context.Background(),
+		openai.ChatCompletionNewParams{
+			Messages: []openai.ChatCompletionMessageParamUnion{
+				openai.SystemMessage(t.cfg.Client.Prompt),
+				openai.UserMessage(textToTranslate),
+			},
+			Model: t.cfg.LLM.Model,
+		})
+
+	if err != nil {
+		return "", fmt.Errorf("OpenAI API 调用失败: %w", err)
 	}
-	if updateErrors > 0 {
-		log.Println("警告：某些翻译后的单元格无法写回 Excel 结构。")
+
+	if len(resp.Choices) > 0 && resp.Choices[0].Message.Content != "" {
+		translated := strings.TrimSpace(resp.Choices[0].Message.Content)
+		t.cache.Set(textToTranslate, translated)
+		return translated, nil
 	}
+
+	return "", fmt.Errorf("OpenAI 返回了空的翻译结果")
 }
 
 // IsCJKText 检查文本是否包含中文、日文或韩文字符
 func IsCJKText(text string) bool {
 	for _, r := range text {
-		// Unicode 范围内的 CJK 字符
+		// CJK 字符的 Unicode 范围
 		if (r >= '\u4e00' && r <= '\u9fff') || // 中文
 			(r >= '\u3040' && r <= '\u309f') || // 日文平假名
 			(r >= '\u30a0' && r <= '\u30ff') || // 日文片假名
@@ -277,44 +175,4 @@ func IsCJKText(text string) bool {
 		}
 	}
 	return false
-}
-
-// TranslateTextWithClient 将文本发送到 OpenAI 进行翻译（使用已初始化的客户端）
-func TranslateTextWithClient(client *openai.Client, textToTranslate string, cfg *config.Config, cache CacheManager) (string, error) {
-	if strings.TrimSpace(textToTranslate) == "" {
-		return "", nil // 没有需要翻译的内容
-	}
-
-	// 如果启用了自动检测CJK，且文本不包含CJK字符，直接返回原文
-	if cfg.Client.AutoDetectCJK && !IsCJKText(textToTranslate) {
-		return textToTranslate, nil
-	}
-
-	// 检查缓存
-	if cached, ok := cache.Get(textToTranslate); ok {
-		return cached, nil
-	}
-
-	resp, err := client.Chat.Completions.New(context.Background(),
-		openai.ChatCompletionNewParams{
-			Messages: []openai.ChatCompletionMessageParamUnion{
-				openai.SystemMessage(cfg.Client.Prompt),
-				openai.UserMessage(textToTranslate),
-			},
-			Model: cfg.LLM.Model,
-		})
-
-	if err != nil {
-		return "", fmt.Errorf("OpenAI API 调用失败: %w", err)
-	}
-
-	if len(resp.Choices) > 0 && resp.Choices[0].Message.Content != "" {
-		// 去除 API 响应中可能的前导/尾随空白或换行符
-		translated := strings.TrimSpace(resp.Choices[0].Message.Content)
-		// 写入缓存
-		cache.Set(textToTranslate, translated)
-		return translated, nil
-	}
-
-	return "", fmt.Errorf("OpenAI 返回了空的翻译")
 }

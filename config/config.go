@@ -18,8 +18,8 @@ type LLMConfig struct {
 // ClientConfig 存储应用程序客户端配置
 type ClientConfig struct {
 	MaxConcurrentRequests int    `toml:"max_concurrent_requests"`
-	Prompt                string `toml:"prompt"`
 	AutoDetectCJK         bool   `toml:"auto_detect_cjk"`
+	Prompt                string `toml:"prompt"`
 }
 
 // Config 存储应用配置
@@ -73,8 +73,8 @@ func LoadConfig() (*Config, error) {
 		defaultConfig := &Config{
 			Client: ClientConfig{
 				MaxConcurrentRequests: DefaultMaxConcurrentRequests,
-				Prompt:                DefaultPrompt,
 				AutoDetectCJK:         DefaultAutoDetectCJK,
+				Prompt:                DefaultPrompt,
 			},
 			LLM: LLMConfig{
 				Model:  DefaultOpenaiModel,

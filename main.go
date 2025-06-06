@@ -2,7 +2,7 @@ package main
 
 import (
 	"exceltranslator/core"
-	"exceltranslator/pkg/gui"
+	"exceltranslator/gui"
 )
 
 func main() {
