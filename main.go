@@ -2,9 +2,9 @@ package main
 
 import (
 	"exceltranslator/core"
-	"exceltranslator/gui"
+	"exceltranslator/gui2"
 )
 
 func main() {
-	gui.CreateGUI(core.ProcessExcelFile)
+	gui2.CreateGUI(core.ProcessExcelFile)
 }

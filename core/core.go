@@ -15,6 +15,12 @@ import (
 	"github.com/openai/openai-go/option"
 )
 
+// TranslationCallback 是翻译过程中每翻译一个单元格时调用的回调函数
+type TranslationCallback func(original, translated string)
+
+// ProcessFunc 定义了处理Excel文件的函数类型
+type ProcessFunc func(inputFile, outputFile string, onTranslated TranslationCallback) error
+
 // CacheManager 定义缓存接口
 type CacheManager interface {
 	Get(key string) (string, bool)
@@ -53,11 +59,11 @@ type Translator struct {
 	cfg          *config.Config
 	openaiClient *openai.Client
 	cache        CacheManager
-	onTranslated func(original, translated string)
+	onTranslated TranslationCallback
 }
 
 // NewTranslator 创建一个新的翻译器实例
-func NewTranslator(cfg *config.Config, onTranslated func(original, translated string)) (*Translator, error) {
+func NewTranslator(cfg *config.Config, onTranslated TranslationCallback) (*Translator, error) {
 	client := openai.NewClient(
 		option.WithBaseURL(cfg.LLM.APIURL),
 		option.WithAPIKey(cfg.LLM.APIKey),
@@ -71,7 +77,7 @@ func NewTranslator(cfg *config.Config, onTranslated func(original, translated st
 }
 
 // ProcessExcelFile 是翻译 Excel 文件的主入口点
-func ProcessExcelFile(inputFile, outputFile string, onTranslated func(original, translated string)) error {
+func ProcessExcelFile(inputFile, outputFile string, onTranslated TranslationCallback) error {
 	log.Println("开始翻译")
 	startTime := time.Now()
 

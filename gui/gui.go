@@ -2,6 +2,7 @@ package gui
 
 import (
 	"errors"
+	"exceltranslator/core"
 	"gioui.org/app"
 	"gioui.org/io/key"
 	"gioui.org/io/system"
@@ -53,12 +54,12 @@ type guiState struct {
 	translatedName    string           // 将生成的译文文件名
 	savedFilePath     string           // 保存的文件路径
 	status            string
-	currentOriginal   string                                                                                   // 当前正在翻译的原文
-	currentTranslated string                                                                                   // 当前翻译的结果
-	processing        bool                                                                                     // 任何后台操作进行中为true
-	savePending       bool                                                                                     // 标识翻译完成后需要弹出保存对话框
-	translationDone   bool                                                                                     // 标识翻译是否已完成
-	processFunc       func(inputFile, outputFile string, onTranslated func(original, translated string)) error // 翻译函数签名
+	currentOriginal   string           // 当前正在翻译的原文
+	currentTranslated string           // 当前翻译的结果
+	processing        bool             // 任何后台操作进行中为true
+	savePending       bool             // 标识翻译完成后需要弹出保存对话框
+	translationDone   bool             // 标识翻译是否已完成
+	processFunc       core.ProcessFunc // 翻译函数签名
 	window            *app.Window
 	explorerInst      *explorer.Explorer
 	fileOpResultChan  chan explorerResult // 文件选择/创建结果的通道
@@ -71,7 +72,7 @@ type guiState struct {
 }
 
 // CreateGUI 初始化并运行GUI
-func CreateGUI(processFunc func(inputFile, outputFile string, onTranslated func(original, translated string)) error) {
+func CreateGUI(processFunc core.ProcessFunc) {
 	go func() {
 		w := new(app.Window)
 		w.Option(
