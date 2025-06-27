@@ -3,6 +3,7 @@ package gui2
 import (
 	"exceltranslator/core"
 	"fmt"
+	"github.com/richardwilkes/unison/enums/side"
 	"io"
 	"os"
 	"path/filepath"
@@ -118,25 +119,54 @@ func (a *AppWindow) initUI() {
 // createLabels 创建所有标签控件
 func (a *AppWindow) createLabels() {
 	// 状态标签
-	a.statusLabel = unison.NewLabel()
-	a.statusLabel.HAlign = align.Middle
+	a.statusLabel = createLabel()
 
 	// 文件名标签
-	a.filenameLabel = unison.NewLabel()
-	a.filenameLabel.HAlign = align.Middle
+	a.filenameLabel = createLabel()
 
 	// 原文标签
-	a.originalLabel = unison.NewLabel()
-	a.originalLabel.HAlign = align.Middle
+	a.originalLabel = createLabel()
 
 	// 译文标签
-	a.translatedLabel = unison.NewLabel()
-	a.translatedLabel.HAlign = align.Middle
-	//a.translatedLabel.Font = a.translatedLabel.Font.Face().WithColor(unison.Green)
+	a.translatedLabel = createLabel()
+}
+
+func createLabel() *unison.Label {
+	label := unison.NewLabel()
+	fontDesc := label.Font.Descriptor()
+	fontDesc.Size = 11
+	label.Font = fontDesc.Font()
+	label.HAlign = align.Middle
+	return label
 }
 
 // createButtons 创建所有按钮控件
 func (a *AppWindow) createButtons() {
+	// 设置按钮主题
+	buttonInk := &unison.ThemeColor{Light: unison.RGB(19, 122, 80), Dark: unison.RGB(19, 122, 80)}
+	fontDesc := unison.SystemFont.Descriptor()
+	fontDesc.Size = 11
+	unison.DefaultButtonTheme = unison.ButtonTheme{
+		TextDecoration: unison.TextDecoration{
+			Font:            fontDesc.Font(),
+			BackgroundInk:   buttonInk,
+			OnBackgroundInk: unison.ThemeOnFocus,
+		},
+		EdgeInk:             unison.ThemeSurfaceEdge,
+		SelectionInk:        buttonInk,
+		OnSelectionInk:      unison.ThemeOnFocus,
+		Gap:                 unison.StdIconGap,
+		CornerRadius:        4,
+		HMargin:             8,
+		VMargin:             1,
+		DrawableOnlyHMargin: 3,
+		DrawableOnlyVMargin: 3,
+		ClickAnimationTime:  100 * time.Millisecond,
+		HAlign:              align.Middle,
+		VAlign:              align.Middle,
+		Side:                side.Left,
+		HideBase:            false,
+	}
 	// 定义通用的按钮布局数据
 	buttonLayoutData := &unison.FlexLayoutData{
 		HAlign: align.Middle,
@@ -145,15 +175,9 @@ func (a *AppWindow) createButtons() {
 
 	// 创建一个通用的按钮尺寸设置器
 	buttonSizer := func(hint unison.Size) (min, pref, max unison.Size) {
-		size := unison.Size{Width: 80, Height: 24}
+		size := unison.Size{Width: 80, Height: 30}
 		return size, size, size
 	}
-
-	// 设置背景色
-	buttonBackgroundColor := unison.DodgerBlue
-	buttonBorder := unison.NewLineBorder(buttonBackgroundColor,
-		4.0, unison.NewUniformInsets(1),
-		true)
 
 	// 选择文件按钮
 	a.selectFileBtn = unison.NewButton()
@@ -162,7 +186,6 @@ func (a *AppWindow) createButtons() {
 	a.selectFileBtn.ClickCallback = a.handleSelectFile
 	a.selectFileBtn.SetLayoutData(buttonLayoutData)
 	a.selectFileBtn.SetFocusable(false)
-	a.selectFileBtn.SetBorder(buttonBorder)
 
 	// 重新选择按钮
 	a.reselectBtn = unison.NewButton()
@@ -171,7 +194,6 @@ func (a *AppWindow) createButtons() {
 	a.reselectBtn.ClickCallback = a.handleSelectFile
 	a.reselectBtn.SetLayoutData(buttonLayoutData)
 	a.reselectBtn.SetFocusable(false)
-	//a.reselectBtn.SetBorder(buttonBorder)
 
 	// 翻译按钮
 	a.translateBtn = unison.NewButton()
@@ -180,7 +202,6 @@ func (a *AppWindow) createButtons() {
 	a.translateBtn.ClickCallback = a.handleTranslate
 	a.translateBtn.SetLayoutData(buttonLayoutData)
 	a.translateBtn.SetFocusable(false)
-	a.translateBtn.SetBorder(buttonBorder)
 
 	// 下一个按钮
 	a.nextBtn = unison.NewButton()
@@ -189,7 +210,6 @@ func (a *AppWindow) createButtons() {
 	a.nextBtn.ClickCallback = a.handleNext
 	a.nextBtn.SetLayoutData(buttonLayoutData)
 	a.nextBtn.SetFocusable(false)
-	a.nextBtn.SetBorder(buttonBorder)
 }
 
 // createCenteredSpacer 创建一个居中对齐的空白间距方法
