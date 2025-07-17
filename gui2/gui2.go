@@ -3,6 +3,7 @@ package gui2
 import (
 	"exceltranslator/core"
 	"fmt"
+	"github.com/richardwilkes/toolbox/v2/geom"
 	"github.com/richardwilkes/unison/enums/side"
 	"io"
 	"os"
@@ -97,7 +98,7 @@ func NewAppWindow(processFunc core.ProcessFunc) (*AppWindow, error) {
 // initUI 初始化所有UI元素
 func (a *AppWindow) initUI() {
 	content := a.Content()
-	content.SetBorder(unison.NewEmptyBorder(unison.NewUniformInsets(10)))
+	content.SetBorder(unison.NewEmptyBorder(geom.NewUniformInsets(10)))
 
 	// 使用单列布局，设置水平居中
 	content.SetLayout(&unison.FlexLayout{
@@ -174,8 +175,8 @@ func (a *AppWindow) createButtons() {
 	}
 
 	// 创建一个通用的按钮尺寸设置器
-	buttonSizer := func(hint unison.Size) (min, pref, max unison.Size) {
-		size := unison.Size{Width: 80, Height: 30}
+	buttonSizer := func(hint geom.Size) (min, pref, max geom.Size) {
+		size := geom.Size{Width: 80, Height: 30}
 		return size, size, size
 	}
 
@@ -216,10 +217,10 @@ func (a *AppWindow) createButtons() {
 func createCenteredSpacer(height int) *unison.Panel {
 	h := float32(height)
 	spacer := unison.NewPanel()
-	spacer.SetSizer(func(hint unison.Size) (min, pref, max unison.Size) {
-		return unison.Size{Width: 0, Height: h},
-			unison.Size{Width: hint.Width, Height: h},
-			unison.Size{Width: 10000, Height: h}
+	spacer.SetSizer(func(hint geom.Size) (min, pref, max geom.Size) {
+		return geom.Size{Width: 0, Height: h},
+			geom.Size{Width: hint.Width, Height: h},
+			geom.Size{Width: 10000, Height: h}
 	})
 	spacer.SetLayoutData(&unison.FlexLayoutData{
 		HAlign: align.Fill,
