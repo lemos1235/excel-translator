@@ -108,9 +108,19 @@ func ProcessExcelFile(inputFile, outputFile string, onTranslated TranslationCall
 
 // ProcessFile 处理单个 Excel 文件的翻译
 func (t *Translator) ProcessFile(inputFile, outputFile string) error {
+	// Sheet 名称翻译
+	sheetTranslator := excel.NewSheetTranslator(t.cfg.Client.MaxConcurrentRequests)
+	sheetTranslator.TranslateSheetNames(inputFile, outputFile, func(text string) (string, error) {
+		translatedText, err := t.TranslateText(text)
+		if err == nil && t.onTranslated != nil {
+			t.onTranslated(text, translatedText)
+		}
+		return translatedText, err
+	})
+
 	// Cells 翻译
 	cellTranslator := excel.NewCellTranslator(t.cfg.Client.MaxConcurrentRequests)
-	cellTranslator.TranslateCells(inputFile, outputFile, func(text string) (string, error) {
+	cellTranslator.TranslateCells(outputFile, outputFile, func(text string) (string, error) {
 		translatedText, err := t.TranslateText(text)
 		if err == nil && t.onTranslated != nil {
 			t.onTranslated(text, translatedText)
