@@ -1,561 +1,653 @@
 package gui2
 
 import (
-	"exceltranslator/core"
+	"context"
+	"errors"
 	"fmt"
-	"github.com/richardwilkes/toolbox/v2/geom"
-	"github.com/richardwilkes/unison/enums/side"
-	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/richardwilkes/toolbox/fatal"
-	"github.com/richardwilkes/unison"
-	"github.com/richardwilkes/unison/enums/align"
+	"exceltranslator/config"
+	"exceltranslator/core"
+
+	qt "github.com/mappu/miqt/qt6"
+	"github.com/mappu/miqt/qt6/mainthread"
 )
 
-// AppState 保存GUI的状态
-type AppState struct {
-	originalFilename  string           // 用户选择的原始文件名(用于显示)
-	inputTempFile     string           // 实际输入文件的临时路径
-	tempFile          string           // 临时输出文件路径
-	translatedName    string           // 将生成的译文文件名
-	status            string           // 当前状态信息
-	currentOriginal   string           // 当前正在翻译的原文
-	currentTranslated string           // 当前翻译的结果
-	processing        bool             // 任何后台操作进行中为true
-	translationDone   bool             // 标识翻译是否已完成
-	processFunc       core.ProcessFunc // 翻译函数签名
+// MainWindow Excel翻译器的主窗口，包含所有UI组件和状态管理
+type MainWindow struct {
+	window *qt.QMainWindow
+
+	// 文件操作相关UI组件
+	inputFileEdit *qt.QLineEdit   // 输入文件路径显示框
+	inputFileBtn  *qt.QPushButton // 文件浏览按钮
+	fileGroup     *qt.QGroupBox   // 文件选择区域容器，支持拖拽
+
+	// 设置页面UI组件
+	apiKeyEdit            *qt.QLineEdit // API密钥输入框
+	apiUrlEdit            *qt.QLineEdit // API地址输入框
+	modelEdit             *qt.QLineEdit // 模型名称输入框
+	promptEdit            *qt.QTextEdit // 翻译提示词输入框
+	maxConcurrentSpin     *qt.QSpinBox  // 最大并发数设置
+	onlyTranslateCJKCheck *qt.QCheckBox // 仅翻译CJK文本选项
+
+	// 主界面控制组件
+	progressBar *qt.QProgressBar // 翻译进度条
+	logTextEdit *qt.QTextEdit    // 日志显示区域
+	startBtn    *qt.QPushButton  // 开始翻译按钮
+	stopBtn     *qt.QPushButton  // 停止翻译按钮
+
+	// 应用状态
+	isTranslating    bool   // 当前是否正在翻译
+	translationCount int    // 已翻译的条目计数
+	tempOutputFile   string // 临时输出文件路径
+	lastOpenDir      string // 上次打开文件的目录
+	lastSaveDir      string // 上次保存文件的目录
+
+	// 协程控制
+	ctx    context.Context    // 用于取消翻译操作的上下文
+	cancel context.CancelFunc // 取消函数
+
+	// 状态保护
+	stateMutex sync.Mutex // 保护翻译状态的互斥锁
 }
 
-// AppWindow 是应用程序主窗口
-type AppWindow struct {
-	*unison.Window
-	state           *AppState
-	selectFileBtn   *unison.Button
-	reselectBtn     *unison.Button
-	translateBtn    *unison.Button
-	nextBtn         *unison.Button
-	statusLabel     *unison.Label
-	filenameLabel   *unison.Label
-	originalLabel   *unison.Label
-	translatedLabel *unison.Label
-}
-
-// CreateGUI 初始化并运行基于Unison的GUI
+// CreateGUI 创建并启动GUI应用程序
+// processFunc: 翻译处理函数，由core包提供
 func CreateGUI(processFunc core.ProcessFunc) {
-	unison.Start(unison.StartupFinishedCallback(func() {
-		_, err := NewAppWindow(processFunc)
-		fatal.IfErr(err)
-	}))
+	qt.NewQApplication(os.Args)
+
+	window := NewMainWindow(processFunc)
+	window.window.Show()
+
+	qt.QApplication_Exec()
 }
 
-// NewAppWindow 创建并返回一个新的窗口
-func NewAppWindow(processFunc core.ProcessFunc) (*AppWindow, error) {
-	// 创建窗口
-	wnd, err := unison.NewWindow("Excel 翻译器")
-	if err != nil {
-		return nil, err
-	}
+// NewMainWindow 创建主窗口实例，初始化所有UI组件和布局
+// processFunc: 翻译处理函数，用于创建翻译页面
+func NewMainWindow(processFunc core.ProcessFunc) *MainWindow {
+	mw := &MainWindow{}
 
-	state := &AppState{
-		processFunc: processFunc,
-		status:      "",
-	}
+	mw.window = qt.NewQMainWindow2()
+	mw.window.SetWindowTitle("Excel 翻译器")
+	mw.window.SetMinimumSize(qt.NewQSize2(600, 400))
+	mw.window.Resize(800, 400)
 
-	app := &AppWindow{
-		Window: wnd,
-		state:  state,
-	}
+	mw.createMenuBar()
 
-	// 初始化UI元素
-	app.initUI()
+	centralWidget := qt.NewQWidget2()
+	mw.window.SetCentralWidget(centralWidget)
 
-	// 调整窗口大小
-	app.Pack()
+	mainLayout := qt.NewQVBoxLayout2()
+	mainLayout.SetSpacing(20)
+	mainLayout.SetContentsMargins(25, 25, 25, 25)
+	centralWidget.SetLayout(mainLayout.QBoxLayout.QLayout)
 
-	// 设置窗口大小
-	rect := app.FrameRect()
-	rect.Width = 350  // 设置一个合适的宽度
-	rect.Height = 194 // 设置一个合适的高度
+	translationTab := mw.createTranslationPage(processFunc)
+	mainLayout.AddWidget(translationTab)
 
-	// 计算窗口居中位置
-	primaryDisplay := unison.PrimaryDisplay()
-	displayBounds := primaryDisplay.Usable
-	rect.X = displayBounds.X + (displayBounds.Width-rect.Width)/2
-	rect.Y = displayBounds.Y + (displayBounds.Height-rect.Height)/2
+	mw.setupDragAndDrop()
 
-	app.SetFrameRect(rect)
-
-	// 将窗口显示在最前面
-	app.ToFront()
-
-	return app, nil
+	return mw
 }
 
-// initUI 初始化所有UI元素
-func (a *AppWindow) initUI() {
-	content := a.Content()
-	content.SetBorder(unison.NewEmptyBorder(geom.NewUniformInsets(10)))
+// createTranslationPage 创建翻译页面，包含文件选择区域、进度条、控制按钮和日志显示
+// processFunc: 翻译处理函数，绑定到开始翻译按钮
+func (mw *MainWindow) createTranslationPage(processFunc core.ProcessFunc) *qt.QWidget {
+	page := qt.NewQWidget2()
+	mainLayout := qt.NewQHBoxLayout2()
+	page.SetLayout(mainLayout.QBoxLayout.QLayout)
 
-	// 使用单列布局，设置水平居中
-	content.SetLayout(&unison.FlexLayout{
-		Columns:  1,
-		HSpacing: unison.StdHSpacing,
-		VSpacing: 10,
-		HAlign:   align.Middle, // 所有内容水平居中
-		VAlign:   align.Middle, // 所有内容垂直居中
+	leftGroup := qt.NewQGroupBox(page)
+	leftGroup.SetFixedWidth(350)
+	leftLayout := qt.NewQVBoxLayout2()
+	leftLayout.SetSpacing(25)
+	leftLayout.SetContentsMargins(15, 15, 15, 15)
+	leftGroup.SetLayout(leftLayout.QBoxLayout.QLayout)
+
+	fileGroup := qt.NewQGroupBox(leftGroup.QWidget)
+	fileGroup.SetContentsMargins(15, 15, 15, 15)
+	fileGroup.SetAcceptDrops(true)
+	fileLayout := qt.NewQVBoxLayout2()
+	fileLayout.SetSpacing(10)
+	fileGroup.SetLayout(fileLayout.QBoxLayout.QLayout)
+
+	fileHint := qt.NewQLabel5("拖拽Excel文件到此区域或点击浏览文件", fileGroup.QWidget)
+	fileHint.SetAlignment(qt.AlignCenter)
+	fileLayout.AddWidget(fileHint.QWidget)
+
+	mw.inputFileEdit = qt.NewQLineEdit(fileGroup.QWidget)
+	mw.inputFileEdit.SetPlaceholderText("选择要翻译的Excel文件...")
+	mw.inputFileEdit.SetAcceptDrops(true)
+	mw.inputFileEdit.SetReadOnly(true)
+	fileLayout.AddWidget(mw.inputFileEdit.QWidget)
+
+	mw.inputFileBtn = qt.NewQPushButton5("浏览文件...", fileGroup.QWidget)
+	mw.inputFileBtn.OnPressed(func() {
+		mw.selectInputFile()
 	})
+	fileLayout.AddWidget(mw.inputFileBtn.QWidget)
 
-	// 初始化所有控件
-	a.createLabels()
-	a.createButtons()
+	leftLayout.AddWidget(fileGroup.QWidget)
+	mw.fileGroup = fileGroup
 
-	// 初始状态只显示选择文件按钮
-	a.updateUIForCurrentState()
-}
+	mw.progressBar = qt.NewQProgressBar(leftGroup.QWidget)
+	mw.progressBar.SetRange(0, 100)
+	mw.progressBar.SetValue(0)
+	mw.progressBar.SetTextVisible(false)
+	mw.progressBar.SetMinimumHeight(8)
+	leftLayout.AddWidget(mw.progressBar.QWidget)
 
-// createLabels 创建所有标签控件
-func (a *AppWindow) createLabels() {
-	// 状态标签
-	a.statusLabel = createLabel()
+	buttonLayout := qt.NewQHBoxLayout2()
+	buttonLayout.SetSpacing(20)
+	buttonLayout.AddStretch()
 
-	// 文件名标签
-	a.filenameLabel = createLabel()
-
-	// 原文标签
-	a.originalLabel = createLabel()
-
-	// 译文标签
-	a.translatedLabel = createLabel()
-}
-
-func createLabel() *unison.Label {
-	label := unison.NewLabel()
-	fontDesc := label.Font.Descriptor()
-	fontDesc.Size = 11
-	label.Font = fontDesc.Font()
-	label.HAlign = align.Middle
-	return label
-}
-
-// createButtons 创建所有按钮控件
-func (a *AppWindow) createButtons() {
-	// 设置按钮主题
-	buttonInk := &unison.ThemeColor{Light: unison.RGB(19, 122, 80), Dark: unison.RGB(19, 122, 80)}
-	fontDesc := unison.SystemFont.Descriptor()
-	fontDesc.Size = 11
-	unison.DefaultButtonTheme = unison.ButtonTheme{
-		TextDecoration: unison.TextDecoration{
-			Font:            fontDesc.Font(),
-			BackgroundInk:   buttonInk,
-			OnBackgroundInk: unison.ThemeOnFocus,
-		},
-		EdgeInk:             unison.ThemeSurfaceEdge,
-		SelectionInk:        buttonInk,
-		OnSelectionInk:      unison.ThemeOnFocus,
-		Gap:                 unison.StdIconGap,
-		CornerRadius:        4,
-		HMargin:             8,
-		VMargin:             1,
-		DrawableOnlyHMargin: 3,
-		DrawableOnlyVMargin: 3,
-		ClickAnimationTime:  100 * time.Millisecond,
-		HAlign:              align.Middle,
-		VAlign:              align.Middle,
-		Side:                side.Left,
-		HideBase:            false,
-	}
-	// 定义通用的按钮布局数据
-	buttonLayoutData := &unison.FlexLayoutData{
-		HAlign: align.Middle,
-		VAlign: align.Middle,
-	}
-
-	// 创建一个通用的按钮尺寸设置器
-	buttonSizer := func(hint geom.Size) (min, pref, max geom.Size) {
-		size := geom.Size{Width: 80, Height: 30}
-		return size, size, size
-	}
-
-	// 选择文件按钮
-	a.selectFileBtn = unison.NewButton()
-	a.selectFileBtn.SetTitle("选择文件")
-	a.selectFileBtn.SetSizer(buttonSizer)
-	a.selectFileBtn.ClickCallback = a.handleSelectFile
-	a.selectFileBtn.SetLayoutData(buttonLayoutData)
-	a.selectFileBtn.SetFocusable(false)
-
-	// 重新选择按钮
-	a.reselectBtn = unison.NewButton()
-	a.reselectBtn.SetTitle("重新选择")
-	a.reselectBtn.SetSizer(buttonSizer)
-	a.reselectBtn.ClickCallback = a.handleSelectFile
-	a.reselectBtn.SetLayoutData(buttonLayoutData)
-	a.reselectBtn.SetFocusable(false)
-
-	// 翻译按钮
-	a.translateBtn = unison.NewButton()
-	a.translateBtn.SetTitle("翻译")
-	a.translateBtn.SetSizer(buttonSizer)
-	a.translateBtn.ClickCallback = a.handleTranslate
-	a.translateBtn.SetLayoutData(buttonLayoutData)
-	a.translateBtn.SetFocusable(false)
-
-	// 下一个按钮
-	a.nextBtn = unison.NewButton()
-	a.nextBtn.SetTitle("下一个")
-	a.nextBtn.SetSizer(buttonSizer)
-	a.nextBtn.ClickCallback = a.handleNext
-	a.nextBtn.SetLayoutData(buttonLayoutData)
-	a.nextBtn.SetFocusable(false)
-}
-
-// createCenteredSpacer 创建一个居中对齐的空白间距方法
-func createCenteredSpacer(height int) *unison.Panel {
-	h := float32(height)
-	spacer := unison.NewPanel()
-	spacer.SetSizer(func(hint geom.Size) (min, pref, max geom.Size) {
-		return geom.Size{Width: 0, Height: h},
-			geom.Size{Width: hint.Width, Height: h},
-			geom.Size{Width: 10000, Height: h}
+	mw.startBtn = qt.NewQPushButton5("开始翻译", leftGroup.QWidget)
+	mw.startBtn.SetFixedWidth(80)
+	mw.startBtn.OnPressed(func() {
+		mw.startTranslation(processFunc)
 	})
-	spacer.SetLayoutData(&unison.FlexLayoutData{
-		HAlign: align.Fill,
-		VAlign: align.Middle,
+	buttonLayout.AddWidget(mw.startBtn.QWidget)
+
+	buttonLayout.AddSpacing(20)
+
+	mw.stopBtn = qt.NewQPushButton5("停止翻译", leftGroup.QWidget)
+	mw.stopBtn.SetFixedWidth(80)
+	mw.stopBtn.SetEnabled(false)
+	mw.stopBtn.OnPressed(func() {
+		mw.stopTranslation()
 	})
-	return spacer
+	buttonLayout.AddWidget(mw.stopBtn.QWidget)
+	buttonLayout.AddStretch()
+
+	leftLayout.AddLayout(buttonLayout.QBoxLayout.QLayout)
+	leftLayout.AddStretch()
+
+	rightGroup := qt.NewQGroupBox4("日志", page)
+	rightGroup.SetStyleSheet(`
+QGroupBox::title {
+	subcontrol-origin: margin;
+	subcontrol-position: top left;
+	top: 10px;
+	left: 12px;
+}
+`)
+	rightLayout := qt.NewQVBoxLayout2()
+	rightLayout.SetContentsMargins(4, 8, 4, 8)
+	rightLayout.SetSpacing(2)
+	rightGroup.SetLayout(rightLayout.QBoxLayout.QLayout)
+
+	mw.logTextEdit = qt.NewQTextEdit4("", rightGroup.QWidget)
+	mw.logTextEdit.SetReadOnly(true)
+	mw.logTextEdit.SetContentsMargins(0, 0, 0, 0)
+	mw.logTextEdit.SetStyleSheet(`
+QTextEdit {
+	background-color: transparent;
+}
+`)
+	rightLayout.AddWidget(mw.logTextEdit.QWidget)
+
+	mainLayout.AddWidget2(leftGroup.QWidget, 0)
+	mainLayout.AddWidget2(rightGroup.QWidget, 1)
+
+	return page
 }
 
-// updateUIForCurrentState 根据当前状态更新UI显示
-func (a *AppWindow) updateUIForCurrentState() {
-	// 直接处理UI更新
-	content := a.Content()
-	content.RemoveAllChildren()
+// createSettingsPage 创建设置页面，包含LLM配置和客户端配置两个分组
+func (mw *MainWindow) createSettingsPage() *qt.QWidget {
+	settingsPage := qt.NewQWidget2()
+	mainLayout := qt.NewQVBoxLayout2()
+	mainLayout.SetSpacing(20)
+	settingsPage.SetLayout(mainLayout.QBoxLayout.QLayout)
 
-	if a.state.processing {
-		// 处理中状态：显示状态和翻译进度
-		a.statusLabel.SetTitle(a.state.status)
-		a.statusLabel.SetLayoutData(&unison.FlexLayoutData{
-			HAlign: align.Middle,
-			VAlign: align.Middle,
-		})
-		content.AddChild(a.statusLabel)
+	llmGroup := qt.NewQGroupBox4("LLM 配置", settingsPage)
+	llmGroup.SetStyleSheet(`
+QGroupBox::title {
+	subcontrol-origin: margin;
+	subcontrol-position: top left;
+	top: 10px;
+	left: 12px;
+}
+`)
+	llmLayout := qt.NewQFormLayout2()
+	llmLayout.SetContentsMargins(10, 20, 10, 20)
+	llmLayout.SetSpacing(15)
+	llmLayout.SetLabelAlignment(qt.AlignRight)
+	llmLayout.SetFieldGrowthPolicy(qt.QFormLayout__ExpandingFieldsGrow)
+	llmGroup.SetLayout(llmLayout.QLayout)
 
-		if a.state.currentOriginal != "" {
-			// 限制显示长度，避免过长
-			origText := limitTextLength(a.state.currentOriginal, 40)
-			transText := limitTextLength(a.state.currentTranslated, 40)
+	mw.apiKeyEdit = qt.NewQLineEdit(llmGroup.QWidget)
+	mw.apiKeyEdit.SetEchoMode(qt.QLineEdit__Password)
+	llmLayout.AddRow3("API Key:", mw.apiKeyEdit.QWidget)
 
-			a.originalLabel.SetTitle("原文: " + origText)
-			a.originalLabel.SetLayoutData(&unison.FlexLayoutData{
-				HAlign: align.Middle,
-				VAlign: align.Middle,
-			})
+	mw.apiUrlEdit = qt.NewQLineEdit(llmGroup.QWidget)
+	llmLayout.AddRow3("API URL:", mw.apiUrlEdit.QWidget)
 
-			a.translatedLabel.SetTitle("译文: " + transText)
-			a.translatedLabel.SetLayoutData(&unison.FlexLayoutData{
-				HAlign: align.Middle,
-				VAlign: align.Middle,
-			})
+	mw.modelEdit = qt.NewQLineEdit(llmGroup.QWidget)
+	llmLayout.AddRow3("模型:", mw.modelEdit.QWidget)
 
-			// 添加空白间距
-			content.AddChild(createCenteredSpacer(10))
-			content.AddChild(a.originalLabel)
-			content.AddChild(a.translatedLabel)
+	mainLayout.AddWidget(llmGroup.QWidget)
+
+	mainLayout.AddSpacing(12)
+
+	clientGroup := qt.NewQGroupBox4("客户端配置", settingsPage)
+	clientGroup.SetStyleSheet(`
+QGroupBox::title {
+	subcontrol-origin: margin;
+	subcontrol-position: top left;
+	top: 10px;
+	left: 12px;
+}
+`)
+	clientLayout := qt.NewQFormLayout2()
+	clientLayout.SetContentsMargins(10, 20, 10, 20)
+	clientLayout.SetSpacing(15)
+	clientLayout.SetLabelAlignment(qt.AlignRight)
+	clientLayout.SetFieldGrowthPolicy(qt.QFormLayout__ExpandingFieldsGrow)
+	clientGroup.SetLayout(clientLayout.QLayout)
+
+	mw.maxConcurrentSpin = qt.NewQSpinBox(clientGroup.QWidget)
+	mw.maxConcurrentSpin.SetRange(1, 20)
+	mw.maxConcurrentSpin.SetValue(5)
+	clientLayout.AddRow3("最大并发请求数:", mw.maxConcurrentSpin.QWidget)
+
+	mw.onlyTranslateCJKCheck = qt.NewQCheckBox(clientGroup.QWidget)
+	mw.onlyTranslateCJKCheck.SetChecked(true)
+	clientLayout.AddRow3("仅翻译CJK文本:", mw.onlyTranslateCJKCheck.QWidget)
+
+	mw.promptEdit = qt.NewQTextEdit(clientGroup.QWidget)
+	mw.promptEdit.SetMaximumHeight(100)
+	clientLayout.AddRow3("翻译提示词:", mw.promptEdit.QWidget)
+
+	mainLayout.AddWidget(clientGroup.QWidget)
+
+	mainLayout.AddStretch()
+
+	return settingsPage
+}
+
+// selectInputFile 打开文件选择对话框，让用户选择要翻译的Excel文件
+func (mw *MainWindow) selectInputFile() {
+	startDir := mw.lastOpenDir
+	if startDir == "" {
+		startDir = os.Getenv("HOME")
+		if startDir == "" {
+			startDir = os.Getenv("USERPROFILE")
 		}
-	} else if a.state.translationDone {
-		// 翻译完成状态：显示状态和下一个按钮
-		a.statusLabel.SetTitle(a.state.status)
-		a.statusLabel.SetLayoutData(&unison.FlexLayoutData{
-			HAlign: align.Middle,
-			VAlign: align.Middle,
-		})
-		content.AddChild(a.statusLabel)
-
-		// 添加空白间距
-		content.AddChild(createCenteredSpacer(10))
-		content.AddChild(a.nextBtn)
-	} else if a.state.inputTempFile != "" {
-		// 已选择文件状态：显示文件名和操作按钮
-		a.filenameLabel.SetTitle("已选择: " + a.state.originalFilename)
-		a.filenameLabel.SetLayoutData(&unison.FlexLayoutData{
-			HAlign: align.Middle,
-			VAlign: align.Middle,
-		})
-		content.AddChild(a.filenameLabel)
-
-		if a.state.status != "" {
-			a.statusLabel.SetTitle(a.state.status)
-			a.statusLabel.SetLayoutData(&unison.FlexLayoutData{
-				HAlign: align.Middle,
-				VAlign: align.Middle,
-			})
-			content.AddChild(a.statusLabel)
-		}
-
-		// 添加空白间距
-		content.AddChild(createCenteredSpacer(5))
-		content.AddChild(a.reselectBtn)
-		content.AddChild(a.translateBtn)
-	} else {
-		// 初始状态：显示选择文件按钮
-		if a.state.status != "" {
-			a.statusLabel.SetTitle(a.state.status)
-			a.statusLabel.SetLayoutData(&unison.FlexLayoutData{
-				HAlign: align.Middle,
-				VAlign: align.Middle,
-			})
-			content.AddChild(a.statusLabel)
-
-			// 添加空白间距
-			content.AddChild(createCenteredSpacer(10))
-		}
-		content.AddChild(a.selectFileBtn)
 	}
 
-	a.MarkForRedraw()
+	fileName := qt.QFileDialog_GetOpenFileName4(
+		mw.window.QWidget,
+		"选择Excel文件",
+		startDir,
+		"Excel files (*.xlsx *.xls);;All Files (*)",
+	)
+	if fileName != "" {
+		mw.inputFileEdit.SetText(fileName)
+		mw.lastOpenDir = filepath.Dir(fileName)
+		mw.logTextEdit.Clear()
+		mw.progressBar.SetValue(0)
+	}
 }
 
-// handleSelectFile 处理文件选择按钮点击
-func (a *AppWindow) handleSelectFile() {
-	if a.state.processing {
+// startTranslation 开始翻译过程，创建临时文件并在协程中执行翻译
+// 使用mainthread.Wait确保UI更新在主线程中进行，避免界面卡死
+func (mw *MainWindow) startTranslation(processFunc core.ProcessFunc) {
+	// 使用互斥锁保护状态检查和设置
+	mw.stateMutex.Lock()
+	defer mw.stateMutex.Unlock()
+
+	// 防止重复启动翻译
+	if mw.isTranslating {
+		mw.addLog("翻译正在进行中，请等待当前翻译完成")
 		return
 	}
 
-	// 清理之前的临时文件
-	if a.state.tempFile != "" {
-		_ = os.Remove(a.state.tempFile)
-		_ = os.Remove(filepath.Dir(a.state.tempFile))
-	}
+	inputFile := mw.inputFileEdit.Text()
 
-	// 重置状态
-	a.state.tempFile = ""
-	a.state.originalFilename = ""
-	a.state.translatedName = ""
-	a.state.inputTempFile = ""
-	a.state.translationDone = false
-	a.state.currentOriginal = ""
-	a.state.currentTranslated = ""
-
-	// 更新UI状态
-	a.state.processing = true
-	a.state.status = "正在选择..."
-	a.updateUIForCurrentState()
-
-	// 使用InvokeTask确保在主线程上创建对话框
-	unison.InvokeTask(func() {
-		openDialog := unison.NewOpenDialog()
-		openDialog.SetAllowsMultipleSelection(false)
-		openDialog.SetAllowedExtensions("xlsx")
-
-		if openDialog.RunModal() {
-			paths := openDialog.Paths()
-			if len(paths) == 0 {
-				// 用户取消或出错
-				a.state.status = "已取消"
-			} else {
-				path := paths[0]
-				// 文件选择成功
-				a.state.inputTempFile = path
-				a.state.originalFilename = filepath.Base(path)
-				a.state.translatedName = getTranslatedFilename(a.state.originalFilename)
-				a.state.status = ""
-			}
-		} else {
-			// 对话框被取消
-			a.state.status = "已取消"
-		}
-
-		a.state.processing = false
-		a.updateUIForCurrentState()
-	})
-}
-
-// handleTranslate 处理翻译按钮点击
-func (a *AppWindow) handleTranslate() {
-	if a.state.processing || a.state.inputTempFile == "" || a.state.translationDone {
+	if inputFile == "" {
+		qt.QMessageBox_Warning(mw.window.QWidget, "错误", "请选择要翻译的文件")
 		return
 	}
 
-	// 设置状态
-	a.state.processing = true
-	a.state.status = "正在翻译..."
+	mw.progressBar.SetValue(0)
+	mw.logTextEdit.Clear()
 
-	// 设置临时文件路径
-	a.state.tempFile = createTempFilePath(a.state.translatedName)
+	tempDir := os.TempDir()
+	base := filepath.Base(inputFile)
+	ext := filepath.Ext(base)
+	name := strings.TrimSuffix(base, ext)
+	tempFile := filepath.Join(tempDir, name+"_translated_"+fmt.Sprintf("%d", time.Now().Unix())+ext)
+	mw.tempOutputFile = tempFile
 
-	// 更新UI
-	a.updateUIForCurrentState()
+	mw.isTranslating = true
+	mw.translationCount = 0
+	mw.updateButtonStates()
 
-	// 启动翻译处理
+	mw.addLog("开始翻译...")
+	mw.addLog(fmt.Sprintf("输入文件: %s", inputFile))
+
+	mw.ctx, mw.cancel = context.WithCancel(context.Background())
+
 	go func() {
-		err := a.state.processFunc(a.state.inputTempFile, a.state.tempFile, func(original, translated string) {
-			// 确保UI更新在主线程执行
-			unison.InvokeTask(func() {
-				a.state.currentOriginal = original
-				a.state.currentTranslated = translated
-				a.updateUIForCurrentState()
+		// 确保临时文件最终被清理
+		defer func() {
+			if mw.tempOutputFile != "" {
+				if _, statErr := os.Stat(mw.tempOutputFile); statErr == nil {
+					if removeErr := os.Remove(mw.tempOutputFile); removeErr != nil {
+						log.Printf("清理临时文件失败: %v", removeErr)
+					}
+				}
+			}
+		}()
+
+		err := processFunc(mw.ctx, inputFile, tempFile, func(original, translated string) {
+			mainthread.Wait(func() {
+				mw.translationCount++
+				mw.addLogUnsafe(fmt.Sprintf("[%d] %s -> %s", mw.translationCount, original, translated))
+				progress := (mw.translationCount % 100) + 1
+				mw.progressBar.SetValue(progress)
 			})
 		})
 
-		// 在主线程上处理结果
-		unison.InvokeTask(func() {
+		mainthread.Wait(func() {
+			// 使用互斥锁保护状态更新
+			mw.stateMutex.Lock()
+			defer mw.stateMutex.Unlock()
+
 			if err != nil {
-				// 翻译失败
-				a.state.status = "处理失败: " + err.Error()
-				a.state.processing = false
-				a.updateUIForCurrentState()
+				var friendlyMsg string
+				if errors.Is(err, context.Canceled) {
+					friendlyMsg = "翻译已取消"
+				} else if errors.Is(err, context.DeadlineExceeded) {
+					friendlyMsg = "翻译超时，请检查网络连接或重试"
+				} else {
+					friendlyMsg = err.Error()
+				}
+
+				mw.addLogUnsafe(fmt.Sprintf("翻译失败: %s", friendlyMsg))
+				if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+					qt.QMessageBox_Critical(mw.window.QWidget, "错误", fmt.Sprintf("翻译失败: %s", friendlyMsg))
+				}
 			} else {
-				// 翻译成功，保存文件
-				a.state.status = "翻译成功"
-				a.saveTranslatedFile()
+				mw.addLogUnsafe("翻译完成!")
+				mw.promptSaveFile()
+			}
+
+			// 只有在还在翻译状态时才调用finishTranslation（防止stopTranslation已经处理过）
+			if mw.isTranslating {
+				mw.finishTranslation()
 			}
 		})
 	}()
 }
 
-// saveTranslatedFile 保存翻译后的文件
-func (a *AppWindow) saveTranslatedFile() {
-	// 在主线程上显示保存对话框
-	unison.InvokeTask(func() {
-		saveDialog := unison.NewSaveDialog()
-		saveDialog.SetInitialFileName(a.state.translatedName)
+// stopTranslation 停止当前翻译过程，取消上下文并恢复UI状态
+func (mw *MainWindow) stopTranslation() {
+	// 使用互斥锁保护状态检查和设置
+	mw.stateMutex.Lock()
+	defer mw.stateMutex.Unlock()
 
-		if saveDialog.RunModal() {
-			path := saveDialog.Path()
-			if len(path) == 0 {
-				// 用户取消
-				a.state.status = "已取消保存"
-				a.state.processing = false
-				a.updateUIForCurrentState()
-				return
-			}
-
-			a.state.status = "正在保存"
-			a.updateUIForCurrentState()
-
-			// 文件复制操作可以在后台线程进行
-			go func() {
-				// 将临时文件复制到选择的路径
-				err := copyFile(a.state.tempFile, path)
-
-				// 在主线程上更新UI
-				unison.InvokeTask(func() {
-					if err != nil {
-						a.state.status = "保存失败: " + err.Error()
-					} else {
-						a.state.status = "保存成功"
-						a.state.translationDone = true
-
-						// 尝试删除临时文件和目录
-						_ = os.Remove(a.state.tempFile)
-						_ = os.Remove(filepath.Dir(a.state.tempFile))
-					}
-
-					a.state.processing = false
-					a.updateUIForCurrentState()
-				})
-			}()
-		} else {
-			// 用户取消
-			a.state.status = "已取消保存"
-			a.state.processing = false
-			a.updateUIForCurrentState()
-		}
-	})
-}
-
-// handleNext 处理"下一个"按钮点击
-func (a *AppWindow) handleNext() {
-	if a.state.processing || !a.state.translationDone {
+	if !mw.isTranslating {
 		return
 	}
 
-	// 清理临时文件
-	if a.state.tempFile != "" {
-		_ = os.Remove(a.state.tempFile)
-		_ = os.Remove(filepath.Dir(a.state.tempFile))
+	mw.addLog("用户停止翻译，正在清理资源...")
+
+	// 立即设置状态，避免重复调用
+	mw.isTranslating = false
+	mw.updateButtonStates()
+
+	if mw.cancel != nil {
+		mw.cancel()
+		mw.addLog("翻译已停止")
 	}
 
-	// 重置所有状态
-	a.state.tempFile = ""
-	a.state.originalFilename = ""
-	a.state.translatedName = ""
-	a.state.inputTempFile = ""
-	a.state.status = ""
-	a.state.translationDone = false
-	a.state.currentOriginal = ""
-	a.state.currentTranslated = ""
-
-	// 更新UI
-	a.updateUIForCurrentState()
+	// 设置进度条为100%表示操作完成
+	mw.progressBar.SetValue(100)
 }
 
-// createTempFilePath 创建一个临时文件路径，确保目录存在
-func createTempFilePath(suggestedName string) string {
-	tempDir := os.TempDir()
-
-	// 使用时间戳作为临时目录名
-	timestamp := time.Now().Format("20060102-150405")
-	subDir := filepath.Join(tempDir, "excel-trans-"+timestamp)
-
-	// 确保目录存在
-	_ = os.MkdirAll(subDir, 0755)
-
-	// 使用时间戳作为临时文件名，但保留原始扩展名
-	ext := filepath.Ext(suggestedName)
-	return filepath.Join(subDir, "temp_"+timestamp+ext)
+// updateButtonStates 根据当前翻译状态更新按钮的启用/禁用状态
+func (mw *MainWindow) updateButtonStates() {
+	if mw.isTranslating {
+		mw.startBtn.SetEnabled(false)
+		mw.stopBtn.SetEnabled(true)
+	} else {
+		mw.startBtn.SetEnabled(true)
+		mw.stopBtn.SetEnabled(false)
+	}
 }
 
-// getTranslatedFilename 获取翻译后的文件名
-func getTranslatedFilename(filename string) string {
-	if filename == "" {
-		// 使用时间戳生成唯一文件名
-		timestamp := time.Now().Format("20060102-150405")
-		return "excel_" + timestamp + "_译文.xlsx"
+// finishTranslation 完成翻译后的UI状态恢复，重新启用开始按钮并禁用停止按钮
+func (mw *MainWindow) finishTranslation() {
+	mw.isTranslating = false
+	mw.updateButtonStates()
+	mw.progressBar.SetValue(100)
+}
+
+// addLogUnsafe 添加日志到界面（非线程安全版本）
+// 直接操作UI组件，必须在主线程中调用
+func (mw *MainWindow) addLogUnsafe(message string) {
+	timestamp := time.Now().Format("15:04:05")
+	logMessage := fmt.Sprintf("[%s] %s", timestamp, message)
+
+	cursor := mw.logTextEdit.TextCursor()
+	cursor.MovePosition(qt.QTextCursor__End)
+	mw.logTextEdit.SetTextCursor(cursor)
+	mw.logTextEdit.InsertPlainText(logMessage + "\n")
+
+	mw.logTextEdit.EnsureCursorVisible()
+}
+
+// addLog 添加日志到界面（主线程调用版本）
+func (mw *MainWindow) addLog(message string) {
+	mw.addLogUnsafe(message)
+}
+
+// addLogFromGoroutine 从协程中添加日志（线程安全版本）
+// 使用mainthread.Wait确保UI更新在主线程中执行
+func (mw *MainWindow) addLogFromGoroutine(message string) {
+	mainthread.Wait(func() {
+		mw.addLogUnsafe(message)
+	})
+}
+
+// saveConfig 保存当前设置到配置文件
+func (mw *MainWindow) saveConfig() {
+	cfg := &config.Config{
+		LLM: config.LLMConfig{
+			APIKey: mw.apiKeyEdit.Text(),
+			APIURL: mw.apiUrlEdit.Text(),
+			Model:  mw.modelEdit.Text(),
+		},
+		Client: config.ClientConfig{
+			Prompt:                mw.promptEdit.ToPlainText(),
+			MaxConcurrentRequests: mw.maxConcurrentSpin.Value(),
+			OnlyTranslateCJK:      mw.onlyTranslateCJKCheck.IsChecked(),
+		},
 	}
 
-	ext := filepath.Ext(filename)
-	baseWithoutExt := strings.ReplaceAll(filename, ext, "")
-
-	// 限制基础文件名长度，避免生成过长的文件名
-	runes := []rune(baseWithoutExt)
-	if len(runes) > 50 {
-		baseWithoutExt = string(runes[:50])
+	err := config.SaveConfig(cfg)
+	if err != nil {
+		qt.QMessageBox_Critical(mw.window.QWidget, "错误", fmt.Sprintf("保存配置失败: %v", err))
+	} else {
+		qt.QMessageBox_Information(mw.window.QWidget, "成功", "配置已保存")
 	}
-
-	return baseWithoutExt + "_译文" + ext
 }
 
-// limitTextLength 限制文本长度，超长部分用省略号代替
-func limitTextLength(text string, maxLen int) string {
-	if len([]rune(text)) > maxLen {
-		return string([]rune(text)[:maxLen-3]) + "..."
+// promptSaveFile 翻译完成后提示用户保存翻译结果
+// 自动生成默认文件名，并记住用户选择的保存目录
+func (mw *MainWindow) promptSaveFile() {
+	base := filepath.Base(mw.inputFileEdit.Text())
+	ext := filepath.Ext(base)
+	name := strings.TrimSuffix(base, ext)
+	defaultName := name + "_译文" + ext
+
+	startDir := mw.lastSaveDir
+	if startDir == "" {
+		startDir = mw.lastOpenDir
 	}
-	return text
+	if startDir == "" {
+		startDir = os.Getenv("HOME")
+		if startDir == "" {
+			startDir = os.Getenv("USERPROFILE")
+		}
+	}
+
+	defaultPath := filepath.Join(startDir, defaultName)
+	savePath := qt.QFileDialog_GetSaveFileName4(
+		mw.window.QWidget,
+		"保存翻译后的文件",
+		defaultPath,
+		"Excel files (*.xlsx *.xls);;All Files (*)",
+	)
+
+	if savePath != "" {
+		mw.lastSaveDir = filepath.Dir(savePath)
+
+		err := copyFile(mw.tempOutputFile, savePath)
+		if err != nil {
+			qt.QMessageBox_Critical(mw.window.QWidget, "错误", fmt.Sprintf("保存文件失败: %v", err))
+			return
+		}
+
+		qt.QMessageBox_Information(mw.window.QWidget, "成功", fmt.Sprintf("文件已保存到: %s", savePath))
+	} else {
+		qt.QMessageBox_Information(mw.window.QWidget, "完成", "翻译已完成，但未保存文件。\n临时文件位置: "+mw.tempOutputFile)
+	}
 }
 
-// copyFile 将源文件复制到目标路径
+// copyFile 复制文件的工具函数
 func copyFile(src, dst string) error {
 	sourceFile, err := os.Open(src)
 	if err != nil {
-		return fmt.Errorf("打开源文件失败: %w", err)
+		return err
 	}
 	defer sourceFile.Close()
 
 	destFile, err := os.Create(dst)
 	if err != nil {
-		return fmt.Errorf("创建目标文件失败: %w", err)
+		return err
 	}
 	defer destFile.Close()
 
-	_, err = io.Copy(destFile, sourceFile)
+	_, err = destFile.ReadFrom(sourceFile)
+	return err
+}
+
+// createMenuBar 创建应用程序菜单栏，包含偏好设置菜单
+func (mw *MainWindow) createMenuBar() {
+	menuBar := qt.NewQMenuBar2()
+	mw.window.SetMenuBar(menuBar)
+	appMenu := menuBar.AddMenuWithTitle("Excel Translator")
+	preferencesAction := qt.NewQAction2("Preferences...")
+	preferencesAction.SetShortcutsWithShortcuts(qt.QKeySequence__Preferences)
+	preferencesAction.OnTriggered(func() {
+		mw.showSettingsWindow()
+	})
+	appMenu.AddAction(preferencesAction)
+}
+
+// showSettingsWindow 显示设置对话框，允许用户配置API参数和翻译选项
+func (mw *MainWindow) showSettingsWindow() {
+	settingsWindow := qt.NewQDialog(mw.window.QWidget)
+	settingsWindow.SetWindowTitle("偏好设置")
+	settingsWindow.SetModal(true)
+	settingsWindow.SetMinimumSize(qt.NewQSize2(500, 400))
+
+	layout := qt.NewQVBoxLayout2()
+	settingsWindow.SetLayout(layout.QBoxLayout.QLayout)
+
+	settingsWidget := mw.createSettingsPage()
+	layout.AddWidget(settingsWidget)
+
+	mw.loadConfigToSettings()
+
+	buttonLayout := qt.NewQHBoxLayout2()
+	buttonLayout.SetSpacing(20)
+	buttonLayout.AddStretch()
+
+	saveBtn := qt.NewQPushButton3("保存")
+	saveBtn.SetFixedWidth(80)
+	saveBtn.OnPressed(func() {
+		mw.saveConfig()
+		settingsWindow.Accept()
+	})
+	buttonLayout.AddWidget(saveBtn.QWidget)
+
+	cancelBtn := qt.NewQPushButton3("取消")
+	cancelBtn.SetFixedWidth(80)
+	cancelBtn.OnPressed(func() {
+		settingsWindow.Reject()
+	})
+	buttonLayout.AddWidget(cancelBtn.QWidget)
+
+	buttonLayout.AddStretch()
+
+	layout.AddLayout(buttonLayout.QBoxLayout.QLayout)
+
+	settingsWindow.Show()
+	settingsWindow.Exec()
+}
+
+// setupDragAndDrop 设置文件拖拽功能，支持将Excel文件拖拽到文件选择区域
+func (mw *MainWindow) setupDragAndDrop() {
+	mw.fileGroup.OnDragEnterEvent(func(super func(event *qt.QDragEnterEvent), event *qt.QDragEnterEvent) {
+		if event.MimeData().HasUrls() {
+			event.AcceptProposedAction()
+		} else {
+			super(event)
+		}
+	})
+
+	mw.fileGroup.OnDragMoveEvent(func(super func(event *qt.QDragMoveEvent), event *qt.QDragMoveEvent) {
+		if event.MimeData().HasUrls() {
+			event.AcceptProposedAction()
+		} else {
+			super(event)
+		}
+	})
+
+	mw.fileGroup.OnDropEvent(func(super func(event *qt.QDropEvent), event *qt.QDropEvent) {
+		mimeData := event.MimeData()
+		if mimeData.HasUrls() {
+			urls := mimeData.Urls()
+			if len(urls) > 0 {
+				filePath := urls[0].ToLocalFile()
+
+				ext := strings.ToLower(filepath.Ext(filePath))
+				if ext == ".xlsx" || ext == ".xls" {
+					mw.inputFileEdit.SetText(filePath)
+					mw.lastOpenDir = filepath.Dir(filePath)
+					mw.logTextEdit.Clear()
+					mw.progressBar.SetValue(0)
+					event.AcceptProposedAction()
+				} else {
+					qt.QMessageBox_Warning(mw.window.QWidget, "错误", "请拖拽Excel文件(.xlsx或.xls)")
+				}
+			}
+		} else {
+			super(event)
+		}
+	})
+}
+
+// loadConfigToSettings 从配置文件加载设置到UI组件
+func (mw *MainWindow) loadConfigToSettings() {
+	cfg, err := config.LoadConfig()
 	if err != nil {
-		return fmt.Errorf("复制文件内容失败: %w", err)
+		qt.QMessageBox_Warning(mw.window.QWidget, "警告", fmt.Sprintf("加载配置失败: %v", err))
+		return
 	}
 
-	return nil
+	mw.apiKeyEdit.SetText(cfg.LLM.APIKey)
+	mw.apiUrlEdit.SetText(cfg.LLM.APIURL)
+	mw.modelEdit.SetText(cfg.LLM.Model)
+	mw.promptEdit.SetText(cfg.Client.Prompt)
+	mw.maxConcurrentSpin.SetValue(cfg.Client.MaxConcurrentRequests)
+	mw.onlyTranslateCJKCheck.SetChecked(cfg.Client.OnlyTranslateCJK)
 }

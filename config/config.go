@@ -18,7 +18,7 @@ type LLMConfig struct {
 // ClientConfig 存储应用程序客户端配置
 type ClientConfig struct {
 	MaxConcurrentRequests int    `toml:"max_concurrent_requests"`
-	AutoDetectCJK         bool   `toml:"auto_detect_cjk"`
+	OnlyTranslateCJK      bool   `toml:"only_translate_cjk"`
 	Prompt                string `toml:"prompt"`
 }
 
@@ -35,7 +35,7 @@ const (
 	DefaultOpenaiModel           = "qwen-turbo-latest"
 	DefaultMaxConcurrentRequests = 5
 	DefaultPrompt                = "You are a professional translator. Translate Japanese to Simplified Chinese directly. Keep all alphanumeric characters unchanged. Ensure accuracy of technical terms. No explanations needed."
-	DefaultAutoDetectCJK         = true
+	DefaultOnlyTranslateCJK      = true
 )
 
 // 配置文件名
@@ -73,7 +73,7 @@ func LoadConfig() (*Config, error) {
 		defaultConfig := &Config{
 			Client: ClientConfig{
 				MaxConcurrentRequests: DefaultMaxConcurrentRequests,
-				AutoDetectCJK:         DefaultAutoDetectCJK,
+				OnlyTranslateCJK:      DefaultOnlyTranslateCJK,
 				Prompt:                DefaultPrompt,
 			},
 			LLM: LLMConfig{

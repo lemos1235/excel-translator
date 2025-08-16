@@ -19,7 +19,7 @@ import (
 type TranslationCallback func(original, translated string)
 
 // ProcessFunc 定义了处理Excel文件的函数类型
-type ProcessFunc func(inputFile, outputFile string, onTranslated TranslationCallback) error
+type ProcessFunc func(ctx context.Context, inputFile, outputFile string, onTranslated TranslationCallback) error
 
 // CacheManager 定义缓存接口
 type CacheManager interface {
@@ -77,7 +77,7 @@ func NewTranslator(cfg *config.Config, onTranslated TranslationCallback) (*Trans
 }
 
 // ProcessExcelFile 是翻译 Excel 文件的主入口点
-func ProcessExcelFile(inputFile, outputFile string, onTranslated TranslationCallback) error {
+func ProcessExcelFile(ctx context.Context, inputFile, outputFile string, onTranslated TranslationCallback) error {
 	log.Println("开始翻译")
 	startTime := time.Now()
 
@@ -95,7 +95,16 @@ func ProcessExcelFile(inputFile, outputFile string, onTranslated TranslationCall
 		return err
 	}
 
-	err = translator.ProcessFile(inputFile, outputFile)
+	// 使用 defer 确保即使发生 panic 也能记录时间
+	defer func() {
+		elapsedTime := time.Since(startTime)
+		if r := recover(); r != nil {
+			log.Printf("翻译任务因 panic 终止，耗时: %v. panic: %v", elapsedTime, r)
+			panic(r) // 重新抛出 panic
+		}
+	}()
+
+	err = translator.ProcessFile(ctx, inputFile, outputFile)
 
 	elapsedTime := time.Since(startTime)
 	if err != nil {
@@ -107,48 +116,86 @@ func ProcessExcelFile(inputFile, outputFile string, onTranslated TranslationCall
 }
 
 // ProcessFile 处理单个 Excel 文件的翻译
-func (t *Translator) ProcessFile(inputFile, outputFile string) error {
-	// Sheet 名称翻译
-	sheetTranslator := excel.NewSheetTranslator(t.cfg.Client.MaxConcurrentRequests)
-	sheetTranslator.TranslateSheetNames(inputFile, outputFile, func(text string) (string, error) {
-		translatedText, err := t.TranslateText(text)
+func (t *Translator) ProcessFile(ctx context.Context, inputFile, outputFile string) error {
+	// 检查上下文是否已取消
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	// 创建翻译回调函数，添加上下文检查
+	createTranslateFunc := func(text string) (string, error) {
+		// 在每个翻译调用前检查上下文
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		default:
+		}
+
+		translatedText, err := t.TranslateText(ctx, text)
 		if err == nil && t.onTranslated != nil {
 			t.onTranslated(text, translatedText)
 		}
 		return translatedText, err
-	})
+	}
+
+	// Sheet 名称翻译
+	sheetTranslator := excel.NewSheetTranslator(t.cfg.Client.MaxConcurrentRequests)
+	err := sheetTranslator.TranslateSheetNames(ctx, inputFile, outputFile, createTranslateFunc)
+	if err != nil {
+		// 工作表名称翻译失败
+		return fmt.Errorf("工作表名称翻译失败: %w", err)
+	}
+
+	// 检查上下文是否已取消
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 
 	// Cells 翻译
 	cellTranslator := excel.NewCellTranslator(t.cfg.Client.MaxConcurrentRequests)
-	cellTranslator.TranslateCells(outputFile, outputFile, func(text string) (string, error) {
-		translatedText, err := t.TranslateText(text)
-		if err == nil && t.onTranslated != nil {
-			t.onTranslated(text, translatedText)
-		}
-		return translatedText, err
-	})
+	err = cellTranslator.TranslateCells(ctx, outputFile, outputFile, createTranslateFunc)
+	if err != nil {
+		// 单元格翻译失败
+		return fmt.Errorf("单元格翻译失败: %w", err)
+	}
+
+	// 检查上下文是否已取消
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 
 	// Shapes 翻译
 	shapeTranslator := excel.NewShapeTranslator(t.cfg.Client.MaxConcurrentRequests)
-	shapeTranslator.TranslateShapes(outputFile, outputFile, func(text string) (string, error) {
-		translatedText, err := t.TranslateText(text)
-		if err == nil && t.onTranslated != nil {
-			t.onTranslated(text, translatedText)
-		}
-		return translatedText, err
-	})
+	err = shapeTranslator.TranslateShapes(ctx, outputFile, outputFile, createTranslateFunc)
+	if err != nil {
+		// 形状翻译失败
+		return fmt.Errorf("形状翻译失败: %w", err)
+	}
 
 	return nil
 }
 
 // TranslateText 将文本发送到翻译 API
-func (t *Translator) TranslateText(textToTranslate string) (string, error) {
+func (t *Translator) TranslateText(ctx context.Context, textToTranslate string) (string, error) {
+	// 检查上下文是否已取消
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	default:
+	}
+
 	if strings.TrimSpace(textToTranslate) == "" {
 		return "", nil // 没有内容需要翻译
 	}
 
-	// 如果启用了自动检测 CJK，且文本不包含 CJK 字符，则返回原文
-	if t.cfg.Client.AutoDetectCJK && !IsCJKText(textToTranslate) {
+	// 如果启用了仅翻译CJK文本，且文本不包含 CJK 字符，则返回原文
+	if t.cfg.Client.OnlyTranslateCJK && !IsCJKText(textToTranslate) {
 		return textToTranslate, nil
 	}
 
@@ -157,7 +204,14 @@ func (t *Translator) TranslateText(textToTranslate string) (string, error) {
 		return cached, nil
 	}
 
-	resp, err := t.openaiClient.Chat.Completions.New(context.Background(),
+	// 再次检查上下文是否已取消（在 API 调用前）
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	default:
+	}
+
+	resp, err := t.openaiClient.Chat.Completions.New(ctx,
 		openai.ChatCompletionNewParams{
 			Messages: []openai.ChatCompletionMessageParamUnion{
 				openai.SystemMessage(t.cfg.Client.Prompt),
@@ -167,7 +221,8 @@ func (t *Translator) TranslateText(textToTranslate string) (string, error) {
 		})
 
 	if err != nil {
-		return "", fmt.Errorf("OpenAI API 调用失败: %w", err)
+		// OpenAI API 调用失败
+		return "", err
 	}
 
 	if len(resp.Choices) > 0 && resp.Choices[0].Message.Content != "" {

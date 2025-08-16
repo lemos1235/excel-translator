@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"exceltranslator/config"
 	"exceltranslator/core"
 	"fmt"
@@ -43,7 +44,8 @@ func main() {
 	}
 
 	// 处理单个 Excel 文件
-	processErr := core.ProcessExcelFile(inputFile, outputFile, func(original, translated string) {
+	ctx := context.Background()
+	processErr := core.ProcessExcelFile(ctx, inputFile, outputFile, func(original, translated string) {
 		log.Printf("翻译: %s -> %s", original, translated)
 	})
 	if processErr != nil {

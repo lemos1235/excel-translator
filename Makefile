@@ -14,7 +14,7 @@ WINDOWS_ARCH_LIST = \
 	windows-amd64
 
 darwin-gui:
-	gogio -target macos -arch arm64 -icon appicon.png -o $(APPDIR)/$(APPNAME) $(GOFILES)
+	gogio -target macos -arch arm64 -icon appicon.png --ldflags="-s -w" -o $(APPDIR)/$(APPNAME) $(GOFILES)
 
 darwin-amd64:
 	GOARCH=amd64 GOOS=darwin $(GOBUILD) -o $(BINDIR)/$(NAME)-$@ $(GOFILES)

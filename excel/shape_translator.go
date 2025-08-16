@@ -3,6 +3,7 @@ package excel
 import (
 	"archive/zip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -11,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/semaphore"
 )
@@ -28,33 +30,52 @@ func NewShapeTranslator(maxConcurrentRequests int) *ShapeTranslator {
 }
 
 // TranslateShapes 处理 Excel 文件中的形状翻译
-func (st *ShapeTranslator) TranslateShapes(inputFile, outputFile string, translateFunc func(string) (string, error)) {
+func (st *ShapeTranslator) TranslateShapes(ctx context.Context, inputFile, outputFile string, translateFunc func(string) (string, error)) error {
+	// 检查上下文是否已取消
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
 	// 创建临时目录
 	tempDir, err := os.MkdirTemp("", "excel-translator-*")
 	if err != nil {
-		log.Printf("创建临时目录失败: %v", err)
-		return
+		return fmt.Errorf("创建临时目录失败: %w", err)
 	}
 	defer os.RemoveAll(tempDir)
 
 	// 解压 Excel 文件
 	if err := st.UnzipExcel(inputFile, tempDir); err != nil {
-		log.Printf("解压 Excel 文件失败: %v", err)
-		return
+		return fmt.Errorf("解压 Excel 文件失败: %w", err)
+	}
+
+	// 检查上下文是否已取消
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
 	}
 
 	// 处理 drawings 目录
 	drawingsDir := filepath.Join(tempDir, "xl", "drawings")
-	if err := st.ProcessDrawings(drawingsDir, translateFunc); err != nil {
-		log.Printf("处理 drawings 失败: %v", err)
-		return
+	if err := st.ProcessDrawings(ctx, drawingsDir, translateFunc); err != nil {
+		return err
+	}
+
+	// 检查上下文是否已取消
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
 	}
 
 	// 重新打包为 Excel 文件
 	if err := st.ZipExcel(tempDir, outputFile); err != nil {
-		log.Printf("重新打包 Excel 文件失败: %v", err)
-		return
+		return fmt.Errorf("重新打包 Excel 文件失败: %w", err)
 	}
+
+	return nil
 }
 
 // UnzipExcel 解压 Excel 文件到指定目录
@@ -184,16 +205,23 @@ func (st *ShapeTranslator) ZipExcel(sourceDir, outputFile string) error {
 }
 
 // ProcessDrawings 处理 drawings 目录中的所有 drawing*.xml 文件
-func (st *ShapeTranslator) ProcessDrawings(drawingsDir string, translateFunc func(string) (string, error)) error {
+func (st *ShapeTranslator) ProcessDrawings(ctx context.Context, drawingsDir string, translateFunc func(string) (string, error)) error {
 	files, err := filepath.Glob(filepath.Join(drawingsDir, "drawing*.xml"))
 	if err != nil {
 		return err
 	}
 
 	for _, file := range files {
-		err := st.TranslateDrawingFile(file, translateFunc)
+		// 检查上下文是否已取消
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		err := st.TranslateDrawingFile(ctx, file, translateFunc)
 		if err != nil {
-			return fmt.Errorf("处理文件 %s 失败: %w", file, err)
+			return err
 		}
 	}
 	return nil
@@ -201,7 +229,14 @@ func (st *ShapeTranslator) ProcessDrawings(drawingsDir string, translateFunc fun
 
 // TranslateDrawingFile 翻译 drawing*.xml 文件
 // TranslateDrawingFile 异步翻译 drawing*.xml 文件中的 <a:t> 标签内容
-func (st *ShapeTranslator) TranslateDrawingFile(file string, translateFunc func(string) (string, error)) error {
+func (st *ShapeTranslator) TranslateDrawingFile(ctx context.Context, file string, translateFunc func(string) (string, error)) error {
+	// 检查上下文是否已取消
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
 	re := regexp.MustCompile(`<a:t>(.*?)</a:t>`)
 
 	// 读取原始文件内容
@@ -225,31 +260,70 @@ func (st *ShapeTranslator) TranslateDrawingFile(file string, translateFunc func(
 
 	results := make([]TranslatedResult, len(matches))
 
+	// 初始化所有结果为原始内容，避免零值导致的 slice bounds 错误
+	for i, match := range matches {
+		original := strContent[match[0]:match[1]]
+		results[i] = TranslatedResult{match[0], match[1], original}
+	}
+
+	// 创建带缓冲的 channel 用于优雅关闭
+	done := make(chan struct{})
+	defer close(done)
+
 	wg := sync.WaitGroup{}
 	sem := semaphore.NewWeighted(int64(st.maxConcurrentRequests))
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// 使用 context 的子 context 来控制 goroutine
+	childCtx, childCancel := context.WithCancel(ctx)
+	defer childCancel()
 
 	wg.Add(len(matches))
 
 	for i, match := range matches {
 		go func(i int, start, end int) {
 			defer wg.Done()
-			// 获取信号量以限制并发数
-			if err := sem.Acquire(ctx, 1); err != nil {
-				log.Printf("获取信号量失败: %v\n", err)
+
+			// 首先检查上下文是否已取消，避免不必要的信号量获取
+			select {
+			case <-childCtx.Done():
 				return
+			default:
+			}
+
+			// 获取信号量以限制并发数，使用 select 来处理取消
+			acquireDone := make(chan error, 1)
+			go func() {
+				acquireDone <- sem.Acquire(childCtx, 1)
+			}()
+
+			select {
+			case <-childCtx.Done():
+				// 上下文已取消，直接返回，不再等待信号量
+				return
+			case err := <-acquireDone:
+				if err != nil {
+					// 获取信号量失败，但不再打印大量错误日志
+					return
+				}
 			}
 			defer sem.Release(1)
 
-			original := strContent[start:end]
+			// 再次检查上下文是否已取消
+			select {
+			case <-childCtx.Done():
+				return
+			default:
+			}
+
 			text := strContent[match[2]:match[3]]
 
-			translated, err := translateFunc(text)
-			if err != nil {
-				log.Printf("翻译文本 '%s' (文件: %s) 失败: %v\n", text, file, err)
-				results[i] = TranslatedResult{start, end, original}
+			translated, tranErr := translateFunc(text)
+			if tranErr != nil {
+				// 只在非取消错误时记录日志
+				if !errors.Is(tranErr, context.Canceled) {
+					log.Printf("翻译文本 '%s' (文件: %s) 失败: %v\n", text, file, tranErr)
+				}
+				// 保持原始内容，results[i] 已经在上面设置过了
 				return
 			}
 
@@ -258,7 +332,35 @@ func (st *ShapeTranslator) TranslateDrawingFile(file string, translateFunc func(
 		}(i, match[0], match[1])
 	}
 
-	wg.Wait()
+	// 等待所有 goroutine 完成或上下文取消
+	waitDone := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(waitDone)
+	}()
+
+	select {
+	case <-childCtx.Done():
+		// 上下文取消，等待一定时间让 goroutines 清理，然后强制取消
+		childCancel()
+		select {
+		case <-waitDone:
+			// goroutines 已完成
+		case <-time.After(5 * time.Second):
+			// 超时，强制返回
+			log.Printf("文件 %s 处理超时，强制停止\n", file)
+		}
+		return ctx.Err()
+	case <-waitDone:
+		// 所有 goroutines 已完成
+	}
+
+	// 检查上下文是否已取消
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 
 	// 替换内容（倒序替换避免索引错位）
 	var builder strings.Builder

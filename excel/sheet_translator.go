@@ -2,20 +2,13 @@ package excel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
-	"sync"
 
 	"github.com/xuri/excelize/v2"
-	"golang.org/x/sync/semaphore"
 )
-
-// SheetTranslationTask 保存工作表翻译任务信息
-type SheetTranslationTask struct {
-	OriginalName string // 原始工作表名称
-	NewName      string // 翻译后的工作表名称
-}
 
 // SheetTranslator 处理 Excel 工作表名称的翻译
 type SheetTranslator struct {
@@ -29,92 +22,40 @@ func NewSheetTranslator(maxConcurrentRequests int) *SheetTranslator {
 	}
 }
 
-// TranslateSheetNames 翻译工作表名称
-func (st *SheetTranslator) TranslateSheetNames(inputFile, outputFile string, translateFunc func(string) (string, error)) {
-	// 打开 Excel 文件
+// TranslateSheetNames 翻译工作表名称（同步执行）
+func (st *SheetTranslator) TranslateSheetNames(ctx context.Context, inputFile, outputFile string, translateFunc func(string) (string, error)) error {
 	f, err := excelize.OpenFile(inputFile)
 	if err != nil {
-		fmt.Printf("打开输入 Excel 文件 '%s' 时出错: %v", inputFile, err)
+		return fmt.Errorf("打开输入 Excel 文件 '%s' 时出错: %w", inputFile, err)
 	}
-	defer func() {
-		if err := f.Close(); err != nil {
-			fmt.Printf("警告: 关闭输入文件时出错: %v", err)
-		}
-	}()
+	defer f.Close()
 
-	// 获取所有工作表名称
 	sheetNames := f.GetSheetList()
-	if len(sheetNames) == 0 {
-		// 没有工作表，直接保存
-		if err := f.SaveAs(outputFile); err != nil {
-			fmt.Printf("保存输出文件 '%s' 时出错: %v", outputFile, err)
-		}
-	}
 
-	// 准备翻译任务
-	tasks := make([]SheetTranslationTask, len(sheetNames))
-	for i, sheetName := range sheetNames {
-		tasks[i] = SheetTranslationTask{
-			OriginalName: sheetName,
-		}
-	}
-
-	// 并发翻译工作表名称
-	var wg sync.WaitGroup
-	sem := semaphore.NewWeighted(int64(st.maxConcurrentRequests))
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	wg.Add(len(tasks))
-
-	for i := range tasks {
-		go func(i int) {
-			defer wg.Done()
-
-			// 获取信号量以限制并发数
-			if err := sem.Acquire(ctx, 1); err != nil {
-				fmt.Printf("获取信号量失败: %v", err)
-				return
+	// 翻译工作表名称
+	for _, sheetName := range sheetNames {
+		translatedName, tranErr := translateFunc(sheetName)
+		if tranErr != nil {
+			if !errors.Is(tranErr, context.Canceled) {
+				fmt.Printf("翻译工作表名称 '%s' 时出错: %v", sheetName, tranErr)
 			}
-			defer sem.Release(1)
+			continue
+		}
 
-			// 翻译工作表名称
-			translatedName, tranErr := translateFunc(tasks[i].OriginalName)
-			if tranErr != nil {
-				fmt.Printf("翻译工作表名称 '%s' 时出错: %v", tasks[i].OriginalName, tranErr)
-				// 如果翻译失败，保持原名称
-				tasks[i].NewName = tasks[i].OriginalName
-			} else if translatedName != "" {
-				// 处理工作表名称长度限制（Excel 最大 31 个字符）
-				tasks[i].NewName = st.truncateSheetName(translatedName)
+		if translatedName != "" && translatedName != sheetName {
+			// 处理工作表名称长度限制
+			newName := st.truncateSheetName(translatedName)
+			uniqueName := st.ensureUniqueSheetName(f, newName, sheetName)
+
+			if err := f.SetSheetName(sheetName, uniqueName); err != nil {
+				return fmt.Errorf("重命名工作表 '%s' 为 '%s' 时出错: %w", sheetName, uniqueName, err)
 			} else {
-				// 如果翻译结果为空，保持原名称
-				tasks[i].NewName = tasks[i].OriginalName
+				fmt.Printf("工作表 '%s' 已重命名为 '%s'\n", sheetName, uniqueName)
 			}
-		}(i)
-	}
-
-	wg.Wait()
-
-	// 重命名工作表
-	for _, task := range tasks {
-		if task.OriginalName != task.NewName {
-			// 确保新名称不与现有名称冲突
-			newName := st.ensureUniqueSheetName(f, task.NewName, task.OriginalName)
-
-			err := f.SetSheetName(task.OriginalName, newName)
-			if err != nil {
-				fmt.Printf("重命名工作表 '%s' 为 '%s' 时出错: %v", task.OriginalName, newName, err)
-				continue
-			}
-			fmt.Printf("工作表 '%s' 已重命名为 '%s'", task.OriginalName, newName)
 		}
 	}
 
-	// 保存文件
-	if err := f.SaveAs(outputFile); err != nil {
-		fmt.Printf("保存输出文件 '%s' 时出错: %v", outputFile, err)
-	}
+	return f.SaveAs(outputFile)
 }
 
 // ensureUniqueSheetName 确保工作表名称唯一，避免冲突

@@ -24,8 +24,8 @@
 [client]
 # 最大并发请求数
 max_concurrent_requests = 5
-# 是否自动检测中日韩文字（仅翻译包含中日韩文字的文本）
-auto_detect_cjk = true
+# 是否仅翻译CJK文本（仅翻译包含中日韩文字的文本）
+only_translate_cjk = true
 # 翻译提示词
 prompt = 'You are a professional translator. Translate Japanese to Simplified Chinese directly. Keep all alphanumeric characters unchanged. Ensure accuracy of technical terms. No explanations needed.'
 
@@ -54,4 +54,10 @@ go build -o bin/exceltranslator cli/main.go
 
 ## GUI 版本
 
-<img src="demo/screenshot2.png" alt="Excel Translator 演示" width="500" />
+安装依赖，请参考 https://github.com/mappu/miqt
+
+编译:
+
+```bash
+go build -ldflags '-s -w' -o out/excel-translator .
+```
