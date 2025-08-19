@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"os"
@@ -327,8 +328,9 @@ func (st *ShapeTranslator) TranslateDrawingFile(ctx context.Context, file string
 				return
 			}
 
-			// 构造替换内容
-			results[i] = TranslatedResult{start, end, fmt.Sprintf("<a:t>%s</a:t>", translated)}
+			// 构造替换内容，对翻译结果进行XML转义
+			escapedTranslated := html.EscapeString(translated)
+			results[i] = TranslatedResult{start, end, fmt.Sprintf("<a:t>%s</a:t>", escapedTranslated)}
 		}(i, match[0], match[1])
 	}
 
