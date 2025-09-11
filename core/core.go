@@ -217,7 +217,8 @@ func (t *Translator) TranslateText(ctx context.Context, textToTranslate string) 
 				openai.SystemMessage(t.cfg.Client.Prompt),
 				openai.UserMessage(textToTranslate),
 			},
-			Model: t.cfg.LLM.Model,
+			Model:    t.cfg.LLM.Model,
+			Metadata: map[string]string{"enable_thinking": "false"},
 		})
 
 	if err != nil {
