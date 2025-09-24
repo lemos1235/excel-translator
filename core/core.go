@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"exceltranslator/word"
 	"fmt"
 	"log"
 	"strings"
@@ -76,8 +77,8 @@ func NewTranslator(cfg *config.Config, onTranslated TranslationCallback) (*Trans
 	}, nil
 }
 
-// ProcessExcelFile 是翻译 Excel 文件的主入口点
-func ProcessExcelFile(ctx context.Context, inputFile, outputFile string, onTranslated TranslationCallback) error {
+// ProcessFile 是翻译文档文件的主入口点
+func ProcessFile(ctx context.Context, inputFile, outputFile string, onTranslated TranslationCallback) error {
 	log.Println("开始翻译")
 	startTime := time.Now()
 
@@ -104,7 +105,14 @@ func ProcessExcelFile(ctx context.Context, inputFile, outputFile string, onTrans
 		}
 	}()
 
-	err = translator.ProcessFile(ctx, inputFile, outputFile)
+	// 检查是 xlsx 还是 docx 文件
+	if strings.HasSuffix(inputFile, ".xlsx") {
+		err = translator.TranslateExcelFile(ctx, inputFile, outputFile)
+	} else if strings.HasSuffix(inputFile, ".docx") {
+		err = translator.TranslateDocxFile(ctx, inputFile, outputFile)
+	} else {
+		return fmt.Errorf("不支持的文件格式: %s", inputFile)
+	}
 
 	elapsedTime := time.Since(startTime)
 	if err != nil {
@@ -115,8 +123,8 @@ func ProcessExcelFile(ctx context.Context, inputFile, outputFile string, onTrans
 	return err
 }
 
-// ProcessFile 处理单个 Excel 文件的翻译
-func (t *Translator) ProcessFile(ctx context.Context, inputFile, outputFile string) error {
+// TranslateExcelFile 处理 Excel 文件的翻译
+func (t *Translator) TranslateExcelFile(ctx context.Context, inputFile, outputFile string) error {
 	// 检查上下文是否已取消
 	select {
 	case <-ctx.Done():
@@ -181,6 +189,42 @@ func (t *Translator) ProcessFile(ctx context.Context, inputFile, outputFile stri
 	return nil
 }
 
+// TranslateDocxFile 处理 Docx 文件的翻译
+func (t *Translator) TranslateDocxFile(ctx context.Context, inputFile, outputFile string) error {
+	// 检查上下文是否已取消
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	// 创建翻译回调函数，添加上下文检查
+	createTranslateFunc := func(text string) (string, error) {
+		// 在每个翻译调用前检查上下文
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		default:
+		}
+
+		translatedText, err := t.TranslateText(ctx, text)
+		if err == nil && t.onTranslated != nil {
+			t.onTranslated(text, translatedText)
+		}
+		return translatedText, err
+	}
+
+	// 文档内容翻译
+	documentTranslator := word.NewDocumentTranslator(t.cfg.Client.MaxConcurrentRequests)
+	err := documentTranslator.TranslateDocument(ctx, inputFile, outputFile, createTranslateFunc)
+	if err != nil {
+		// 文档内容翻译失败
+		return fmt.Errorf("文档内容翻译失败: %w", err)
+	}
+
+	return nil
+}
+
 // TranslateText 将文本发送到翻译 API
 func (t *Translator) TranslateText(ctx context.Context, textToTranslate string) (string, error) {
 	// 检查上下文是否已取消
@@ -214,7 +258,7 @@ func (t *Translator) TranslateText(ctx context.Context, textToTranslate string) 
 	resp, err := t.openaiClient.Chat.Completions.New(ctx,
 		openai.ChatCompletionNewParams{
 			Messages: []openai.ChatCompletionMessageParamUnion{
-				openai.SystemMessage(t.cfg.Client.Prompt),
+				openai.AssistantMessage(t.cfg.Client.Prompt),
 				openai.UserMessage(textToTranslate),
 			},
 			Model:    t.cfg.LLM.Model,

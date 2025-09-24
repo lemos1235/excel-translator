@@ -6,5 +6,5 @@ import (
 )
 
 func main() {
-	gui2.CreateGUI(core.ProcessExcelFile)
+	gui2.CreateGUI(core.ProcessFile)
 }

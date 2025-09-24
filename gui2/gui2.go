@@ -284,7 +284,7 @@ func (mw *MainWindow) selectInputFile() {
 		mw.window.QWidget,
 		"选择Excel文件",
 		startDir,
-		"Excel files (*.xlsx *.xls);;All Files (*)",
+		"Excel files (*.xlsx *.docx);;All Files (*)",
 	)
 	if fileName != "" {
 		mw.inputFileEdit.SetText(fileName)
@@ -503,7 +503,7 @@ func (mw *MainWindow) promptSaveFile() {
 		mw.window.QWidget,
 		"保存翻译后的文件",
 		defaultPath,
-		"Excel files (*.xlsx *.xls);;All Files (*)",
+		"Excel files (*.xlsx *.docx);;All Files (*)",
 	)
 
 	if savePath != "" {
@@ -620,14 +620,14 @@ func (mw *MainWindow) setupDragAndDrop() {
 				filePath := urls[0].ToLocalFile()
 
 				ext := strings.ToLower(filepath.Ext(filePath))
-				if ext == ".xlsx" || ext == ".xls" {
+				if ext == ".xlsx" || ext == ".docx" {
 					mw.inputFileEdit.SetText(filePath)
 					mw.lastOpenDir = filepath.Dir(filePath)
 					mw.logTextEdit.Clear()
 					mw.progressBar.SetValue(0)
 					event.AcceptProposedAction()
 				} else {
-					qt.QMessageBox_Warning(mw.window.QWidget, "错误", "请拖拽Excel文件(.xlsx或.xls)")
+					qt.QMessageBox_Warning(mw.window.QWidget, "错误", "请拖拽Excel文件(.xlsx或.docx)")
 				}
 			}
 		} else {
