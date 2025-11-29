@@ -61,3 +61,7 @@ go build -o bin/exceltranslator cli/main.go
 ```bash
 go build -ldflags '-s -w' -o out/excel-translator .
 ```
+
+截图:
+
+![demo.png](./demo/demo.png)
