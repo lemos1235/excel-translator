@@ -21,6 +21,8 @@ import (
 // MainWindow Excel翻译器的主窗口，包含所有UI组件和状态管理
 type MainWindow struct {
 	window *qt.QMainWindow
+	// 处理函数
+	processFunc core.ProcessFunc
 
 	// 文件操作相关UI组件
 	inputFileEdit *qt.QLineEdit   // 输入文件路径显示框
@@ -70,7 +72,9 @@ func CreateGUI(processFunc core.ProcessFunc) {
 // NewMainWindow 创建主窗口实例，初始化所有UI组件和布局
 // processFunc: 翻译处理函数，用于创建翻译页面
 func NewMainWindow(processFunc core.ProcessFunc) *MainWindow {
-	mw := &MainWindow{}
+	mw := &MainWindow{
+		processFunc: processFunc,
+	}
 
 	mw.window = qt.NewQMainWindow2()
 	mw.window.SetWindowTitle("Excel 翻译器")
@@ -87,7 +91,7 @@ func NewMainWindow(processFunc core.ProcessFunc) *MainWindow {
 	mainLayout.SetContentsMargins(25, 25, 25, 25)
 	centralWidget.SetLayout(mainLayout.QBoxLayout.QLayout)
 
-	translationTab := mw.createTranslationPage(processFunc)
+	translationTab := mw.createTranslationPage()
 	mainLayout.AddWidget(translationTab)
 
 	mw.setupDragAndDrop()
@@ -96,8 +100,7 @@ func NewMainWindow(processFunc core.ProcessFunc) *MainWindow {
 }
 
 // createTranslationPage 创建翻译页面，包含文件选择区域、进度条、控制按钮和日志显示
-// processFunc: 翻译处理函数，绑定到开始翻译按钮
-func (mw *MainWindow) createTranslationPage(processFunc core.ProcessFunc) *qt.QWidget {
+func (mw *MainWindow) createTranslationPage() *qt.QWidget {
 	page := qt.NewQWidget2()
 	mainLayout := qt.NewQHBoxLayout2()
 	page.SetLayout(mainLayout.QBoxLayout.QLayout)
@@ -149,7 +152,7 @@ func (mw *MainWindow) createTranslationPage(processFunc core.ProcessFunc) *qt.QW
 	mw.startBtn = qt.NewQPushButton5("开始翻译", leftGroup.QWidget)
 	mw.startBtn.SetFixedWidth(80)
 	mw.startBtn.OnPressed(func() {
-		mw.startTranslation(processFunc)
+		mw.startTranslation()
 	})
 	buttonLayout.AddWidget(mw.startBtn.QWidget)
 
@@ -296,7 +299,7 @@ func (mw *MainWindow) selectInputFile() {
 
 // startTranslation 开始翻译过程，创建临时文件并在协程中执行翻译
 // 使用mainthread.Wait确保UI更新在主线程中进行，避免界面卡死
-func (mw *MainWindow) startTranslation(processFunc core.ProcessFunc) {
+func (mw *MainWindow) startTranslation() {
 	// 使用互斥锁保护状态检查和设置
 	mw.stateMutex.Lock()
 	defer mw.stateMutex.Unlock()
@@ -345,32 +348,68 @@ func (mw *MainWindow) startTranslation(processFunc core.ProcessFunc) {
 			}
 		}()
 
-		err := processFunc(mw.ctx, inputFile, tempFile, func(original, translated string) {
+		events, err := mw.processFunc(mw.ctx, inputFile, tempFile)
+		if err != nil {
 			mainthread.Wait(func() {
-				mw.translationCount++
-				mw.addLogUnsafe(fmt.Sprintf("[%d] %s -> %s", mw.translationCount, original, translated))
-				progress := (mw.translationCount % 100) + 1
-				mw.progressBar.SetValue(progress)
+				mw.addLogUnsafe(fmt.Sprintf("初始化翻译失败: %v", err))
+				mw.stateMutex.Lock()
+				defer mw.stateMutex.Unlock()
+				if mw.isTranslating {
+					mw.finishTranslation()
+				}
 			})
-		})
+			return
+		}
+
+		var finalErr error
+
+		for ev := range events {
+			mainthread.Wait(func() {
+				switch ev.Kind {
+				case core.EventTranslated:
+					mw.translationCount++
+					mw.addLogUnsafe(fmt.Sprintf("[%d][%s] %s -> %s", mw.translationCount, ev.Stage, ev.Original, ev.Translated))
+				case core.EventProgress:
+					if ev.ProgressTotal > 0 {
+						progress := ev.ProgressDone * 100 / ev.ProgressTotal
+						if progress > 100 {
+							progress = 100
+						}
+						mw.progressBar.SetValue(progress)
+					} else {
+						// 没有总数时简单递增
+						next := (mw.translationCount % 100) + 1
+						mw.progressBar.SetValue(next)
+					}
+				case core.EventError:
+					if ev.Stage == "llm" {
+						mw.addLogUnsafe("翻译模型调用失败，请检查模型配置")
+					} else {
+						mw.addLogUnsafe(fmt.Sprintf("翻译失败（阶段: %s）", ev.Stage))
+					}
+				case core.EventComplete:
+					finalErr = ev.Err
+				}
+			})
+		}
 
 		mainthread.Wait(func() {
 			// 使用互斥锁保护状态更新
 			mw.stateMutex.Lock()
 			defer mw.stateMutex.Unlock()
 
-			if err != nil {
+			if finalErr != nil {
 				var friendlyMsg string
-				if errors.Is(err, context.Canceled) {
+				if errors.Is(finalErr, context.Canceled) {
 					friendlyMsg = "翻译已取消"
-				} else if errors.Is(err, context.DeadlineExceeded) {
+				} else if errors.Is(finalErr, context.DeadlineExceeded) {
 					friendlyMsg = "翻译超时，请检查网络连接或重试"
 				} else {
-					friendlyMsg = err.Error()
+					friendlyMsg = finalErr.Error()
 				}
 
 				mw.addLogUnsafe(fmt.Sprintf("翻译失败: %s", friendlyMsg))
-				if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				if !errors.Is(finalErr, context.Canceled) && !errors.Is(finalErr, context.DeadlineExceeded) {
 					qt.QMessageBox_Critical(mw.window.QWidget, "错误", fmt.Sprintf("翻译失败: %s", friendlyMsg))
 				}
 			} else {

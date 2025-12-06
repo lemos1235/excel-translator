@@ -13,17 +13,28 @@ import (
 // SheetTranslator 处理 Excel 工作表名称的翻译
 type SheetTranslator struct {
 	maxConcurrentRequests int
+	ctx                   context.Context
+	translateFunc         func(string) (string, error)
 }
 
 // NewSheetTranslator 创建一个新的 SheetTranslator 实例
-func NewSheetTranslator(maxConcurrentRequests int) *SheetTranslator {
+func NewSheetTranslator(maxConcurrentRequests int, ctx context.Context, translateFunc func(string) (string, error)) *SheetTranslator {
 	return &SheetTranslator{
 		maxConcurrentRequests: maxConcurrentRequests,
+		ctx:                   ctx,
+		translateFunc:         translateFunc,
 	}
 }
 
 // TranslateSheetNames 翻译工作表名称（同步执行）
-func (st *SheetTranslator) TranslateSheetNames(ctx context.Context, inputFile, outputFile string, translateFunc func(string) (string, error)) error {
+func (st *SheetTranslator) TranslateSheetNames(inputFile, outputFile string) error {
+	// 检查上下文是否已取消
+	select {
+	case <-st.ctx.Done():
+		return st.ctx.Err()
+	default:
+	}
+
 	f, err := excelize.OpenFile(inputFile)
 	if err != nil {
 		return fmt.Errorf("打开输入 Excel 文件 '%s' 时出错: %w", inputFile, err)
@@ -34,7 +45,14 @@ func (st *SheetTranslator) TranslateSheetNames(ctx context.Context, inputFile, o
 
 	// 翻译工作表名称
 	for _, sheetName := range sheetNames {
-		translatedName, tranErr := translateFunc(sheetName)
+		// 检查上下文是否已取消
+		select {
+		case <-st.ctx.Done():
+			return st.ctx.Err()
+		default:
+		}
+
+		translatedName, tranErr := st.translateFunc(sheetName)
 		if tranErr != nil {
 			if !errors.Is(tranErr, context.Canceled) {
 				fmt.Printf("翻译工作表名称 '%s' 时出错: %v", sheetName, tranErr)

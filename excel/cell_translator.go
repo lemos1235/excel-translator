@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/xuri/excelize/v2"
 	"golang.org/x/sync/semaphore"
@@ -21,12 +22,16 @@ type TranslationTask struct {
 // CellTranslator 处理 Excel 单元格中文本的翻译
 type CellTranslator struct {
 	maxConcurrentRequests int
+	ctx                   context.Context
+	translateFunc         func(string) (string, error)
 }
 
 // NewCellTranslator 创建一个新的 CellTranslator 实例
-func NewCellTranslator(maxConcurrentRequests int) *CellTranslator {
+func NewCellTranslator(maxConcurrentRequests int, ctx context.Context, translateFunc func(string) (string, error)) *CellTranslator {
 	return &CellTranslator{
 		maxConcurrentRequests: maxConcurrentRequests,
+		ctx:                   ctx,
+		translateFunc:         translateFunc,
 	}
 }
 
@@ -66,28 +71,41 @@ func (ct *CellTranslator) GetCellsForTranslation(f *excelize.File) []Translation
 	return tasks
 }
 
-// TranslateCells 翻译单元格内容并实时更新到 Excel 文件
-func (ct *CellTranslator) TranslateCells(ctx context.Context, inputFile, outputFile string, translateFunc func(string) (string, error)) error {
+// CellProgress 单元格翻译进度/结果
+type CellProgress struct {
+	Task       TranslationTask
+	Translated string
+	Err        error
+	Done       int
+	Total      int
+}
+
+// TranslateCells 翻译单元格内容并实时更新到 Excel 文件（返回事件流）
+func (ct *CellTranslator) TranslateCells(
+	inputFile,
+	outputFile string,
+) (<-chan CellProgress, error) {
 	// 检查上下文是否已取消
 	select {
-	case <-ctx.Done():
-		return ctx.Err()
+	case <-ct.ctx.Done():
+		return nil, ct.ctx.Err()
 	default:
 	}
 
 	f, err := excelize.OpenFile(inputFile)
 	if err != nil {
-		return fmt.Errorf("打开输入 Excel 文件 '%s' 时出错: %w", inputFile, err)
+		return nil, fmt.Errorf("打开输入 Excel 文件 '%s' 时出错: %w", inputFile, err)
 	}
-	defer func() {
-		if err := f.Close(); err != nil {
-			fmt.Printf("警告: 关闭输入文件时出错: %v", err)
-		}
-	}()
 
 	tasks := ct.GetCellsForTranslation(f)
-	if len(tasks) == 0 {
-		return nil
+	total := len(tasks)
+	progressCh := make(chan CellProgress, ct.maxConcurrentRequests*2+1)
+	if total == 0 {
+		if err := f.SaveAs(outputFile); err != nil {
+			return nil, fmt.Errorf("保存输出文件 '%s' 时出错: %w", outputFile, err)
+		}
+		close(progressCh)
+		return progressCh, nil
 	}
 
 	type TranslatedResult struct {
@@ -102,104 +120,131 @@ func (ct *CellTranslator) TranslateCells(ctx context.Context, inputFile, outputF
 	sem := semaphore.NewWeighted(int64(ct.maxConcurrentRequests))
 
 	wg.Add(len(tasks))
+	var doneCount int64
 
 	// 创建子 context 用于更好的 goroutine 控制
-	childCtx, childCancel := context.WithCancel(ctx)
-	defer childCancel()
+	childCtx, childCancel := context.WithCancel(ct.ctx)
 
-	for i, task := range tasks {
-		go func(i int, task TranslationTask) {
-			defer wg.Done()
-
-			// 首先检查上下文是否已取消
-			select {
-			case <-childCtx.Done():
-				return
-			default:
+	go func() {
+		defer func() {
+			if err := f.Close(); err != nil {
+				fmt.Printf("警告: 关闭输入文件时出错: %v", err)
 			}
+		}()
+		defer close(progressCh)
+		defer childCancel()
 
-			// 获取信号量以限制并发数，使用 select 处理取消
-			acquireDone := make(chan error, 1)
-			go func() {
-				acquireDone <- sem.Acquire(childCtx, 1)
-			}()
+		for i, task := range tasks {
+			go func(i int, task TranslationTask) {
+				defer wg.Done()
 
-			select {
-			case <-childCtx.Done():
-				return
-			case err := <-acquireDone:
-				if err != nil {
-					// 获取信号量失败，不打印错误日志避免垃圾信息
+				// 首先检查上下文是否已取消
+				select {
+				case <-childCtx.Done():
+					return
+				default:
+				}
+
+				// 获取信号量以限制并发数，使用 select 处理取消
+				acquireDone := make(chan error, 1)
+				go func() {
+					acquireDone <- sem.Acquire(childCtx, 1)
+				}()
+
+				select {
+				case <-childCtx.Done():
+					return
+				case err := <-acquireDone:
+					if err != nil {
+						// 获取信号量失败，不打印错误日志避免垃圾信息
+						return
+					}
+				}
+				defer sem.Release(1)
+
+				// 再次检查上下文状态
+				select {
+				case <-childCtx.Done():
+					return
+				default:
+				}
+
+				translatedText, tranErr := ct.translateFunc(task.OriginalText)
+
+				current := int(atomic.AddInt64(&doneCount, 1))
+
+				if tranErr != nil {
+					// 只在非取消错误时记录日志
+					if !errors.Is(tranErr, context.Canceled) {
+						fmt.Printf("翻译单元格 %s:%s 时出错: %v", task.Sheet, task.CellCoord, tranErr)
+					}
+					// 取消后续任务
+					childCancel()
+					progressCh <- CellProgress{
+						Task: task, Err: tranErr, Done: current, Total: total,
+					}
 					return
 				}
-			}
-			defer sem.Release(1)
 
-			// 再次检查上下文状态
+				if translatedText != "" {
+					results[i] = TranslatedResult{
+						Sheet:      task.Sheet,
+						CellCoord:  task.CellCoord,
+						Translated: translatedText,
+					}
+				}
+
+				progressCh <- CellProgress{
+					Task: task, Translated: translatedText, Done: current, Total: total,
+				}
+			}(i, task)
+		}
+
+		// 等待所有 goroutine 完成或上下文取消
+		waitDone := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(waitDone)
+		}()
+
+		select {
+		case <-childCtx.Done():
+			// 上下文取消，强制取消并返回
+			childCancel()
+			progressCh <- CellProgress{Err: ct.ctx.Err(), Total: total, Done: int(atomic.LoadInt64(&doneCount))}
+			return
+		case <-waitDone:
+			// 所有 goroutines 已完成
+		}
+
+		// 替换内容
+		for _, r := range results {
+			// 检查上下文是否已取消
 			select {
-			case <-childCtx.Done():
+			case <-ct.ctx.Done():
+				progressCh <- CellProgress{Err: ct.ctx.Err(), Total: total, Done: int(atomic.LoadInt64(&doneCount))}
 				return
 			default:
 			}
 
-			translatedText, tranErr := translateFunc(task.OriginalText)
-
-			if tranErr != nil {
-				// 只在非取消错误时记录日志
-				if !errors.Is(tranErr, context.Canceled) {
-					fmt.Printf("翻译单元格 %s:%s 时出错: %v", task.Sheet, task.CellCoord, tranErr)
-				}
-				return
-			} else if translatedText != "" {
-				results[i] = TranslatedResult{
-					Sheet:      task.Sheet,
-					CellCoord:  task.CellCoord,
-					Translated: translatedText,
-				}
+			// 跳过未成功翻译的结果（零值）
+			if r.Sheet == "" || r.CellCoord == "" || r.Translated == "" {
+				continue
 			}
-		}(i, task)
-	}
 
-	// 等待所有 goroutine 完成或上下文取消
-	waitDone := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(waitDone)
+			cellErr := f.SetCellValue(r.Sheet, r.CellCoord, r.Translated)
+			if cellErr != nil {
+				progressCh <- CellProgress{Err: fmt.Errorf("更新单元格 %s:%s 时出错: %w", r.Sheet, r.CellCoord, cellErr), Total: total, Done: int(atomic.LoadInt64(&doneCount))}
+				return
+			}
+		}
+
+		// 保存输出文件
+		if err := f.SaveAs(outputFile); err != nil {
+			progressCh <- CellProgress{Err: fmt.Errorf("保存输出文件 '%s' 时出错: %w", outputFile, err), Total: total, Done: total}
+			return
+		}
 	}()
 
-	select {
-	case <-childCtx.Done():
-		// 上下文取消，强制取消并返回
-		childCancel()
-		return ctx.Err()
-	case <-waitDone:
-		// 所有 goroutines 已完成
-	}
-
-	// 替换内容
-	for _, r := range results {
-		// 检查上下文是否已取消
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		// 跳过未成功翻译的结果（零值）
-		if r.Sheet == "" || r.CellCoord == "" || r.Translated == "" {
-			continue
-		}
-
-		cellErr := f.SetCellValue(r.Sheet, r.CellCoord, r.Translated)
-		if cellErr != nil {
-			return fmt.Errorf("更新单元格 %s:%s 时出错: %w", r.Sheet, r.CellCoord, cellErr)
-		}
-	}
-
-	// 保存输出文件
-	if err := f.SaveAs(outputFile); err != nil {
-		return fmt.Errorf("保存输出文件 '%s' 时出错: %w", outputFile, err)
-	}
-
-	return nil
+	return progressCh, nil
 }

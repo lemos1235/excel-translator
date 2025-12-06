@@ -45,10 +45,32 @@ func main() {
 
 	// 处理单个 Excel 文件
 	ctx := context.Background()
-	processErr := core.ProcessFile(ctx, inputFile, outputFile, func(original, translated string) {
-		log.Printf("翻译: %s -> %s", original, translated)
-	})
-	if processErr != nil {
-		log.Fatalf("处理文件时出错: %v", processErr)
+	events, err := core.ProcessFile(ctx, inputFile, outputFile)
+	if err != nil {
+		log.Fatalf("处理文件初始化失败: %v", err)
+	}
+
+	var finalErr error
+	for event := range events {
+		switch event.Kind {
+		case core.EventTranslated:
+			log.Printf("翻译: %s -> %s", event.Original, event.Translated)
+		case core.EventError:
+			if event.Stage == "llm" {
+				log.Printf("翻译模型调用失败，请检查模型配置: %v", event.Err)
+			} else {
+				log.Printf("错误(stage=%s): %v", event.Stage, event.Err)
+			}
+		case core.EventProgress:
+			if event.ProgressTotal > 0 {
+				log.Printf("进度(stage=%s): %d/%d", event.Stage, event.ProgressDone, event.ProgressTotal)
+			}
+		case core.EventComplete:
+			finalErr = event.Err
+		}
+	}
+
+	if finalErr != nil {
+		log.Fatalf("处理文件时出错: %v", finalErr)
 	}
 }

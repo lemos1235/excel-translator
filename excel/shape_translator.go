@@ -21,21 +21,25 @@ import (
 // ShapeTranslator 处理 Excel 文件中形状的翻译
 type ShapeTranslator struct {
 	maxConcurrentRequests int
+	ctx                   context.Context
+	translateFunc         func(string) (string, error)
 }
 
 // NewShapeTranslator 创建一个新的 ShapeTranslator 实例
-func NewShapeTranslator(maxConcurrentRequests int) *ShapeTranslator {
+func NewShapeTranslator(maxConcurrentRequests int, ctx context.Context, translateFunc func(string) (string, error)) *ShapeTranslator {
 	return &ShapeTranslator{
 		maxConcurrentRequests: maxConcurrentRequests,
+		ctx:                   ctx,
+		translateFunc:         translateFunc,
 	}
 }
 
 // TranslateShapes 处理 Excel 文件中的形状翻译
-func (st *ShapeTranslator) TranslateShapes(ctx context.Context, inputFile, outputFile string, translateFunc func(string) (string, error)) error {
+func (st *ShapeTranslator) TranslateShapes(inputFile, outputFile string) error {
 	// 检查上下文是否已取消
 	select {
-	case <-ctx.Done():
-		return ctx.Err()
+	case <-st.ctx.Done():
+		return st.ctx.Err()
 	default:
 	}
 
@@ -53,21 +57,21 @@ func (st *ShapeTranslator) TranslateShapes(ctx context.Context, inputFile, outpu
 
 	// 检查上下文是否已取消
 	select {
-	case <-ctx.Done():
-		return ctx.Err()
+	case <-st.ctx.Done():
+		return st.ctx.Err()
 	default:
 	}
 
 	// 处理 drawings 目录
 	drawingsDir := filepath.Join(tempDir, "xl", "drawings")
-	if err := st.ProcessDrawings(ctx, drawingsDir, translateFunc); err != nil {
+	if err := st.ProcessDrawings(drawingsDir); err != nil {
 		return err
 	}
 
 	// 检查上下文是否已取消
 	select {
-	case <-ctx.Done():
-		return ctx.Err()
+	case <-st.ctx.Done():
+		return st.ctx.Err()
 	default:
 	}
 
@@ -206,7 +210,7 @@ func (st *ShapeTranslator) ZipExcel(sourceDir, outputFile string) error {
 }
 
 // ProcessDrawings 处理 drawings 目录中的所有 drawing*.xml 文件
-func (st *ShapeTranslator) ProcessDrawings(ctx context.Context, drawingsDir string, translateFunc func(string) (string, error)) error {
+func (st *ShapeTranslator) ProcessDrawings(drawingsDir string) error {
 	files, err := filepath.Glob(filepath.Join(drawingsDir, "drawing*.xml"))
 	if err != nil {
 		return err
@@ -215,12 +219,12 @@ func (st *ShapeTranslator) ProcessDrawings(ctx context.Context, drawingsDir stri
 	for _, file := range files {
 		// 检查上下文是否已取消
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-st.ctx.Done():
+			return st.ctx.Err()
 		default:
 		}
 
-		err := st.TranslateDrawingFile(ctx, file, translateFunc)
+		err := st.TranslateDrawingFile(file)
 		if err != nil {
 			return err
 		}
@@ -228,13 +232,12 @@ func (st *ShapeTranslator) ProcessDrawings(ctx context.Context, drawingsDir stri
 	return nil
 }
 
-// TranslateDrawingFile 翻译 drawing*.xml 文件
 // TranslateDrawingFile 异步翻译 drawing*.xml 文件中的 <a:t> 标签内容
-func (st *ShapeTranslator) TranslateDrawingFile(ctx context.Context, file string, translateFunc func(string) (string, error)) error {
+func (st *ShapeTranslator) TranslateDrawingFile(file string) error {
 	// 检查上下文是否已取消
 	select {
-	case <-ctx.Done():
-		return ctx.Err()
+	case <-st.ctx.Done():
+		return st.ctx.Err()
 	default:
 	}
 
@@ -275,7 +278,7 @@ func (st *ShapeTranslator) TranslateDrawingFile(ctx context.Context, file string
 	sem := semaphore.NewWeighted(int64(st.maxConcurrentRequests))
 
 	// 使用 context 的子 context 来控制 goroutine
-	childCtx, childCancel := context.WithCancel(ctx)
+	childCtx, childCancel := context.WithCancel(st.ctx)
 	defer childCancel()
 
 	wg.Add(len(matches))
@@ -318,13 +321,14 @@ func (st *ShapeTranslator) TranslateDrawingFile(ctx context.Context, file string
 
 			text := strContent[match[2]:match[3]]
 
-			translated, tranErr := translateFunc(text)
+			translated, tranErr := st.translateFunc(text)
 			if tranErr != nil {
 				// 只在非取消错误时记录日志
 				if !errors.Is(tranErr, context.Canceled) {
 					log.Printf("翻译文本 '%s' (文件: %s) 失败: %v\n", text, file, tranErr)
 				}
 				// 保持原始内容，results[i] 已经在上面设置过了
+				childCancel()
 				return
 			}
 
@@ -352,15 +356,15 @@ func (st *ShapeTranslator) TranslateDrawingFile(ctx context.Context, file string
 			// 超时，强制返回
 			log.Printf("文件 %s 处理超时，强制停止\n", file)
 		}
-		return ctx.Err()
+		return st.ctx.Err()
 	case <-waitDone:
 		// 所有 goroutines 已完成
 	}
 
 	// 检查上下文是否已取消
 	select {
-	case <-ctx.Done():
-		return ctx.Err()
+	case <-st.ctx.Done():
+		return st.ctx.Err()
 	default:
 	}
 
