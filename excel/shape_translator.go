@@ -13,7 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"time"
+	"sync/atomic"
 
 	"golang.org/x/sync/semaphore"
 )
@@ -35,7 +35,11 @@ func NewShapeTranslator(maxConcurrentRequests int, ctx context.Context, translat
 }
 
 // TranslateShapes 处理 Excel 文件中的形状翻译
-func (st *ShapeTranslator) TranslateShapes(inputFile, outputFile string) error {
+func (st *ShapeTranslator) TranslateShapes(
+	inputFile,
+	outputFile string,
+	onProgress func(original, translated string, err error, done, total int),
+) error {
 	// 检查上下文是否已取消
 	select {
 	case <-st.ctx.Done():
@@ -64,7 +68,7 @@ func (st *ShapeTranslator) TranslateShapes(inputFile, outputFile string) error {
 
 	// 处理 drawings 目录
 	drawingsDir := filepath.Join(tempDir, "xl", "drawings")
-	if err := st.ProcessDrawings(drawingsDir); err != nil {
+	if err := st.ProcessDrawings(drawingsDir, onProgress); err != nil {
 		return err
 	}
 
@@ -210,7 +214,10 @@ func (st *ShapeTranslator) ZipExcel(sourceDir, outputFile string) error {
 }
 
 // ProcessDrawings 处理 drawings 目录中的所有 drawing*.xml 文件
-func (st *ShapeTranslator) ProcessDrawings(drawingsDir string) error {
+func (st *ShapeTranslator) ProcessDrawings(
+	drawingsDir string,
+	onProgress func(original, translated string, err error, done, total int),
+) error {
 	files, err := filepath.Glob(filepath.Join(drawingsDir, "drawing*.xml"))
 	if err != nil {
 		return err
@@ -224,7 +231,7 @@ func (st *ShapeTranslator) ProcessDrawings(drawingsDir string) error {
 		default:
 		}
 
-		err := st.TranslateDrawingFile(file)
+		err := st.TranslateDrawingFile(file, onProgress)
 		if err != nil {
 			return err
 		}
@@ -233,7 +240,10 @@ func (st *ShapeTranslator) ProcessDrawings(drawingsDir string) error {
 }
 
 // TranslateDrawingFile 异步翻译 drawing*.xml 文件中的 <a:t> 标签内容
-func (st *ShapeTranslator) TranslateDrawingFile(file string) error {
+func (st *ShapeTranslator) TranslateDrawingFile(
+	file string,
+	onProgress func(original, translated string, err error, done, total int),
+) error {
 	// 检查上下文是否已取消
 	select {
 	case <-st.ctx.Done():
@@ -257,6 +267,7 @@ func (st *ShapeTranslator) TranslateDrawingFile(file string) error {
 		return nil
 	}
 
+	total := len(matches)
 	type TranslatedResult struct {
 		start, end int
 		translated string
@@ -270,10 +281,6 @@ func (st *ShapeTranslator) TranslateDrawingFile(file string) error {
 		results[i] = TranslatedResult{match[0], match[1], original}
 	}
 
-	// 创建带缓冲的 channel 用于优雅关闭
-	done := make(chan struct{})
-	defer close(done)
-
 	wg := sync.WaitGroup{}
 	sem := semaphore.NewWeighted(int64(st.maxConcurrentRequests))
 
@@ -282,6 +289,10 @@ func (st *ShapeTranslator) TranslateDrawingFile(file string) error {
 	defer childCancel()
 
 	wg.Add(len(matches))
+	var doneCount int64
+
+	// 错误通道
+	errCh := make(chan error, 1)
 
 	for i, match := range matches {
 		go func(i int, start, end int) {
@@ -295,20 +306,8 @@ func (st *ShapeTranslator) TranslateDrawingFile(file string) error {
 			}
 
 			// 获取信号量以限制并发数，使用 select 来处理取消
-			acquireDone := make(chan error, 1)
-			go func() {
-				acquireDone <- sem.Acquire(childCtx, 1)
-			}()
-
-			select {
-			case <-childCtx.Done():
-				// 上下文已取消，直接返回，不再等待信号量
+			if err := sem.Acquire(childCtx, 1); err != nil {
 				return
-			case err := <-acquireDone:
-				if err != nil {
-					// 获取信号量失败，但不再打印大量错误日志
-					return
-				}
 			}
 			defer sem.Release(1)
 
@@ -322,43 +321,47 @@ func (st *ShapeTranslator) TranslateDrawingFile(file string) error {
 			text := strContent[match[2]:match[3]]
 
 			translated, tranErr := st.translateFunc(text)
+			current := int(atomic.AddInt64(&doneCount, 1))
+
 			if tranErr != nil {
 				// 只在非取消错误时记录日志
 				if !errors.Is(tranErr, context.Canceled) {
 					log.Printf("翻译文本 '%s' (文件: %s) 失败: %v\n", text, file, tranErr)
 				}
-				// 保持原始内容，results[i] 已经在上面设置过了
+
+				if onProgress != nil {
+					onProgress(text, "", tranErr, current, total)
+				}
+
 				childCancel()
+				select {
+				case errCh <- tranErr:
+				default:
+				}
 				return
 			}
 
 			// 构造替换内容，对翻译结果进行XML转义
 			escapedTranslated := html.EscapeString(translated)
 			results[i] = TranslatedResult{start, end, fmt.Sprintf("<a:t>%s</a:t>", escapedTranslated)}
+
+			if onProgress != nil {
+				onProgress(text, translated, nil, current, total)
+			}
 		}(i, match[0], match[1])
 	}
 
-	// 等待所有 goroutine 完成或上下文取消
-	waitDone := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(waitDone)
-	}()
+	// 等待所有 goroutine 完成
+	wg.Wait()
+	close(errCh)
 
+	// 检查是否有错误
 	select {
-	case <-childCtx.Done():
-		// 上下文取消，等待一定时间让 goroutines 清理，然后强制取消
-		childCancel()
-		select {
-		case <-waitDone:
-			// goroutines 已完成
-		case <-time.After(5 * time.Second):
-			// 超时，强制返回
-			log.Printf("文件 %s 处理超时，强制停止\n", file)
+	case err := <-errCh:
+		if err != nil {
+			return err
 		}
-		return st.ctx.Err()
-	case <-waitDone:
-		// 所有 goroutines 已完成
+	default:
 	}
 
 	// 检查上下文是否已取消

@@ -27,7 +27,11 @@ func NewSheetTranslator(maxConcurrentRequests int, ctx context.Context, translat
 }
 
 // TranslateSheetNames 翻译工作表名称（同步执行）
-func (st *SheetTranslator) TranslateSheetNames(inputFile, outputFile string) error {
+func (st *SheetTranslator) TranslateSheetNames(
+	inputFile,
+	outputFile string,
+	onProgress func(original, translated string, err error, done, total int),
+) error {
 	// 检查上下文是否已取消
 	select {
 	case <-st.ctx.Done():
@@ -42,9 +46,10 @@ func (st *SheetTranslator) TranslateSheetNames(inputFile, outputFile string) err
 	defer f.Close()
 
 	sheetNames := f.GetSheetList()
+	total := len(sheetNames)
 
 	// 翻译工作表名称
-	for _, sheetName := range sheetNames {
+	for i, sheetName := range sheetNames {
 		// 检查上下文是否已取消
 		select {
 		case <-st.ctx.Done():
@@ -57,6 +62,9 @@ func (st *SheetTranslator) TranslateSheetNames(inputFile, outputFile string) err
 			if !errors.Is(tranErr, context.Canceled) {
 				fmt.Printf("翻译工作表名称 '%s' 时出错: %v", sheetName, tranErr)
 			}
+			if onProgress != nil {
+				onProgress(sheetName, "", tranErr, i+1, total)
+			}
 			continue
 		}
 
@@ -66,10 +74,17 @@ func (st *SheetTranslator) TranslateSheetNames(inputFile, outputFile string) err
 			uniqueName := st.ensureUniqueSheetName(f, newName, sheetName)
 
 			if err := f.SetSheetName(sheetName, uniqueName); err != nil {
+				if onProgress != nil {
+					onProgress(sheetName, uniqueName, err, i+1, total)
+				}
 				return fmt.Errorf("重命名工作表 '%s' 为 '%s' 时出错: %w", sheetName, uniqueName, err)
 			} else {
 				fmt.Printf("工作表 '%s' 已重命名为 '%s'\n", sheetName, uniqueName)
 			}
+		}
+
+		if onProgress != nil {
+			onProgress(sheetName, translatedName, nil, i+1, total)
 		}
 	}
 

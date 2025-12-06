@@ -61,27 +61,6 @@ type Translator struct {
 	events       chan TranslateEvent
 }
 
-// LLMError 表示底层大模型调用失败的错误
-type LLMError struct {
-	Err error
-}
-
-func (e LLMError) Error() string {
-	if e.Err != nil {
-		return e.Err.Error()
-	}
-	return "llm error"
-}
-
-func (e LLMError) Unwrap() error {
-	return e.Err
-}
-
-func isLLMError(err error) bool {
-	var llmErr LLMError
-	return errors.As(err, &llmErr)
-}
-
 // EventKind 表示翻译事件类型
 type EventKind string
 
@@ -154,17 +133,17 @@ func ProcessFile(ctx context.Context, inputFile, outputFile string) (<-chan Tran
 
 	go func() {
 		startTime := time.Now()
+		// 确保 close(events) 最后执行（通过最先 defer）
+		defer close(events)
+
 		defer func() {
 			elapsedTime := time.Since(startTime)
 			if r := recover(); r != nil {
 				log.Printf("翻译任务因 panic 终止，耗时: %v. panic: %v", elapsedTime, r)
 				events <- TranslateEvent{Kind: EventError, File: inputFile, Err: fmt.Errorf("panic: %v", r)}
 				events <- TranslateEvent{Kind: EventComplete, File: inputFile, Err: fmt.Errorf("panic: %v", r)}
-				close(events)
-				panic(r) // 重新抛出 panic
 			}
 		}()
-		defer close(events)
 
 		translator, err := NewTranslator(cfg, events)
 		if err != nil {
@@ -229,7 +208,16 @@ func (t *Translator) TranslateExcelFile(ctx context.Context, inputFile, outputFi
 
 	// Sheet 名称翻译
 	sheetTranslator := excel.NewSheetTranslator(t.cfg.Client.MaxConcurrentRequests, ctx, createTranslateFunc)
-	err := sheetTranslator.TranslateSheetNames(inputFile, outputFile)
+
+	// 目前 Sheet 翻译不发送详细进度事件，只记录日志，也可以选择发送 EventProgress
+	onSheetProgress := func(original, translated string, err error, done, total int) {
+		// 简单打印进度，或者在此处发送事件
+		if err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("Sheet翻译进度: %d/%d, 错误: %v", done, total, err)
+		}
+	}
+
+	err := sheetTranslator.TranslateSheetNames(inputFile, outputFile, onSheetProgress)
 	if err != nil {
 		// 工作表名称翻译失败
 		t.emit(ctx, TranslateEvent{Kind: EventError, File: inputFile, Stage: "sheet", Err: err})
@@ -245,40 +233,37 @@ func (t *Translator) TranslateExcelFile(ctx context.Context, inputFile, outputFi
 
 	// Cells 翻译
 	cellTranslator := excel.NewCellTranslator(t.cfg.Client.MaxConcurrentRequests, ctx, createTranslateFunc)
-	cellEvents, err := cellTranslator.TranslateCells(outputFile, outputFile)
-	if err != nil {
-		t.emit(ctx, TranslateEvent{Kind: EventError, File: inputFile, Stage: "cell", Err: err})
-		return fmt.Errorf("单元格翻译失败: %w", err)
-	}
 
-	var cellErr error
-	for ev := range cellEvents {
-		if ev.Err != nil {
-			cellErr = ev.Err
-			if !isLLMError(ev.Err) {
-				t.emit(ctx, TranslateEvent{Kind: EventError, File: inputFile, Stage: "cell", Err: ev.Err, ProgressDone: ev.Done, ProgressTotal: ev.Total})
-			}
-			break
+	onCellProgress := func(original, translated string, err error, done, total int) {
+		if err != nil {
+			t.emit(ctx, TranslateEvent{Kind: EventError, File: inputFile, Stage: "cell", Err: err, ProgressDone: done, ProgressTotal: total})
+			return
 		}
 		t.emit(ctx, TranslateEvent{
 			Kind:          EventTranslated,
 			File:          inputFile,
 			Stage:         "cell",
-			Original:      ev.Task.OriginalText,
-			Translated:    ev.Translated,
-			ProgressDone:  ev.Done,
-			ProgressTotal: ev.Total,
+			Original:      original,
+			Translated:    translated,
+			ProgressDone:  done,
+			ProgressTotal: total,
 		})
 		t.emit(ctx, TranslateEvent{
 			Kind:          EventProgress,
 			File:          inputFile,
 			Stage:         "cell",
-			ProgressDone:  ev.Done,
-			ProgressTotal: ev.Total,
+			ProgressDone:  done,
+			ProgressTotal: total,
 		})
 	}
-	if cellErr != nil {
-		return fmt.Errorf("单元格翻译失败: %w", cellErr)
+
+	err = cellTranslator.TranslateCells(outputFile, outputFile, onCellProgress)
+	if err != nil {
+		// 如果是取消错误，可能已经在 progress 回调中处理了，或者不需要处理
+		if !errors.Is(err, context.Canceled) {
+			t.emit(ctx, TranslateEvent{Kind: EventError, File: inputFile, Stage: "cell", Err: err})
+		}
+		return fmt.Errorf("单元格翻译失败: %w", err)
 	}
 
 	// 检查上下文是否已取消
@@ -290,12 +275,18 @@ func (t *Translator) TranslateExcelFile(ctx context.Context, inputFile, outputFi
 
 	// Shapes 翻译
 	shapeTranslator := excel.NewShapeTranslator(t.cfg.Client.MaxConcurrentRequests, ctx, createTranslateFunc)
-	err = shapeTranslator.TranslateShapes(outputFile, outputFile)
+
+	onShapeProgress := func(original, translated string, err error, done, total int) {
+		if err != nil && !errors.Is(err, context.Canceled) {
+			// 也可以选择发送事件
+			log.Printf("Shape翻译进度: %d/%d, 错误: %v", done, total, err)
+		}
+	}
+
+	err = shapeTranslator.TranslateShapes(outputFile, outputFile, onShapeProgress)
 	if err != nil {
 		// 形状翻译失败
-		if !isLLMError(err) {
-			t.emit(ctx, TranslateEvent{Kind: EventError, File: inputFile, Stage: "shape", Err: err})
-		}
+		t.emit(ctx, TranslateEvent{Kind: EventError, File: inputFile, Stage: "shape", Err: err})
 		return fmt.Errorf("形状翻译失败: %w", err)
 	}
 
@@ -326,41 +317,36 @@ func (t *Translator) TranslateDocxFile(ctx context.Context, inputFile, outputFil
 
 	// 文档内容翻译
 	documentTranslator := word.NewDocumentTranslator(t.cfg.Client.MaxConcurrentRequests, ctx, createTranslateFunc)
-	docEvents, err := documentTranslator.TranslateDocument(inputFile, outputFile)
-	if err != nil {
-		t.emit(ctx, TranslateEvent{Kind: EventError, File: inputFile, Stage: "docx", Err: err})
-		return fmt.Errorf("文档内容翻译失败: %w", err)
-	}
 
-	var docErr error
-	for ev := range docEvents {
-		if ev.Err != nil {
-			docErr = ev.Err
-			if !isLLMError(ev.Err) {
-				t.emit(ctx, TranslateEvent{Kind: EventError, File: inputFile, Stage: "docx", Err: ev.Err, ProgressDone: ev.Done, ProgressTotal: ev.Total})
-			}
-			break
+	onDocProgress := func(original, translated string, err error, done, total int) {
+		if err != nil {
+			t.emit(ctx, TranslateEvent{Kind: EventError, File: inputFile, Stage: "docx", Err: err, ProgressDone: done, ProgressTotal: total})
+			return
 		}
 		t.emit(ctx, TranslateEvent{
 			Kind:          EventTranslated,
 			File:          inputFile,
 			Stage:         "docx",
-			Original:      ev.Text,
-			Translated:    ev.Translated,
-			ProgressDone:  ev.Done,
-			ProgressTotal: ev.Total,
+			Original:      original,
+			Translated:    translated,
+			ProgressDone:  done,
+			ProgressTotal: total,
 		})
 		t.emit(ctx, TranslateEvent{
 			Kind:          EventProgress,
 			File:          inputFile,
 			Stage:         "docx",
-			ProgressDone:  ev.Done,
-			ProgressTotal: ev.Total,
+			ProgressDone:  done,
+			ProgressTotal: total,
 		})
 	}
 
-	if docErr != nil {
-		return fmt.Errorf("文档内容翻译失败: %w", docErr)
+	err := documentTranslator.TranslateDocument(inputFile, outputFile, onDocProgress)
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			t.emit(ctx, TranslateEvent{Kind: EventError, File: inputFile, Stage: "docx", Err: err})
+		}
+		return fmt.Errorf("文档内容翻译失败: %w", err)
 	}
 
 	return nil
@@ -431,9 +417,8 @@ func (t *Translator) TranslateText(ctx context.Context, textToTranslate string) 
 	}
 
 	// 多次失败，提交错误事件并返回
-	llmErr := LLMError{Err: lastErr}
-	t.emit(ctx, TranslateEvent{Kind: EventError, Stage: "llm", Err: llmErr})
-	return "", llmErr
+	t.emit(ctx, TranslateEvent{Kind: EventError, Stage: "llm", Err: lastErr})
+	return "", lastErr
 }
 
 // IsCJKText 检查文本是否包含中文、日文或韩文字符

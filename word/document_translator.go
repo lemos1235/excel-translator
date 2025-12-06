@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"golang.org/x/sync/semaphore"
 )
@@ -35,81 +34,57 @@ func NewDocumentTranslator(maxConcurrentRequests int, ctx context.Context, trans
 	}
 }
 
-// DocumentProgress 文档翻译进度/结果
-type DocumentProgress struct {
-	Text       string
-	Translated string
-	Err        error
-	Done       int
-	Total      int
-}
-
-// TranslateDocument 处理 Word 文件的翻译（返回事件流）
+// TranslateDocument 处理 Word 文件的翻译
 func (st *DocumentTranslator) TranslateDocument(
 	inputFile,
 	outputFile string,
-) (<-chan DocumentProgress, error) {
+	onProgress func(original, translated string, err error, done, total int),
+) error {
 	// 检查上下文是否已取消
 	select {
 	case <-st.ctx.Done():
-		return nil, st.ctx.Err()
+		return st.ctx.Err()
 	default:
 	}
-
-	progressCh := make(chan DocumentProgress, st.maxConcurrentRequests*2+1)
 
 	// 创建临时目录
 	tempDir, err := os.MkdirTemp("", "word-translator-*")
 	if err != nil {
-		return nil, fmt.Errorf("创建临时目录失败: %w", err)
+		return fmt.Errorf("创建临时目录失败: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// 解压 Word 文件
+	if err := st.UnzipWord(inputFile, tempDir); err != nil {
+		return fmt.Errorf("解压 Word 文件失败: %w", err)
 	}
 
-	go func() {
-		defer os.RemoveAll(tempDir)
-		defer close(progressCh)
+	// 检查上下文是否已取消
+	select {
+	case <-st.ctx.Done():
+		return st.ctx.Err()
+	default:
+	}
 
-		// 解压 Word 文件
-		if err := st.UnzipWord(inputFile, tempDir); err != nil {
-			progressCh <- DocumentProgress{Err: fmt.Errorf("解压 Word 文件失败: %w", err)}
-			return
-		}
+	// 处理 document.xml 文件
+	documentXmlFile := filepath.Join(tempDir, "word", "document.xml")
+	if err := st.TranslateDocumentXmlFile(documentXmlFile, onProgress); err != nil {
+		return err
+	}
 
-		// 检查上下文是否已取消
-		select {
-		case <-st.ctx.Done():
-			progressCh <- DocumentProgress{Err: st.ctx.Err()}
-			return
-		default:
-		}
+	// 检查上下文是否已取消
+	select {
+	case <-st.ctx.Done():
+		return st.ctx.Err()
+	default:
+	}
 
-		// 处理 document.xml 文件
-		documentXmlFile := filepath.Join(tempDir, "word", "document.xml")
-		docEvents, err := st.TranslateDocumentXmlFile(documentXmlFile)
-		if err != nil {
-			progressCh <- DocumentProgress{Err: err}
-			return
-		}
+	// 重新打包为 Word 文件
+	if err := st.ZipWord(tempDir, outputFile); err != nil {
+		return fmt.Errorf("重新打包 Word 文件失败: %w", err)
+	}
 
-		for ev := range docEvents {
-			progressCh <- ev
-		}
-
-		// 检查上下文是否已取消
-		select {
-		case <-st.ctx.Done():
-			progressCh <- DocumentProgress{Err: st.ctx.Err()}
-			return
-		default:
-		}
-
-		// 重新打包为 Word 文件
-		if err := st.ZipWord(tempDir, outputFile); err != nil {
-			progressCh <- DocumentProgress{Err: fmt.Errorf("重新打包 Excel 文件失败: %w", err)}
-			return
-		}
-	}()
-
-	return progressCh, nil
+	return nil
 }
 
 // UnzipWord 解压 Word 文件到指定目录
@@ -238,14 +213,15 @@ func (st *DocumentTranslator) ZipWord(sourceDir, outputFile string) error {
 	})
 }
 
-// TranslateDocumentXmlFile 翻译 document.xml 文件（返回事件流）
+// TranslateDocumentXmlFile 翻译 document.xml 文件
 func (st *DocumentTranslator) TranslateDocumentXmlFile(
 	filePath string,
-) (<-chan DocumentProgress, error) {
+	onProgress func(original, translated string, err error, done, total int),
+) error {
 	// 检查上下文是否已取消
 	select {
 	case <-st.ctx.Done():
-		return nil, st.ctx.Err()
+		return st.ctx.Err()
 	default:
 	}
 
@@ -254,7 +230,7 @@ func (st *DocumentTranslator) TranslateDocumentXmlFile(
 	// 读取原始文件内容
 	content, err := os.ReadFile(filePath)
 	if err != nil {
-		return nil, fmt.Errorf("读取文件 %s 失败: %w", filePath, err)
+		return fmt.Errorf("读取文件 %s 失败: %w", filePath, err)
 	}
 	strContent := string(content)
 
@@ -263,9 +239,7 @@ func (st *DocumentTranslator) TranslateDocumentXmlFile(
 	total := len(matches)
 	if total == 0 {
 		log.Printf("文件 %s 中未找到需要翻译的文本。\n", filePath)
-		progressCh := make(chan DocumentProgress, 1)
-		close(progressCh)
-		return progressCh, nil
+		return nil
 	}
 
 	type TranslatedResult struct {
@@ -275,139 +249,116 @@ func (st *DocumentTranslator) TranslateDocumentXmlFile(
 
 	results := make([]TranslatedResult, len(matches))
 
-	// 初始化所有结果为原始内容，避免零值导致的 slice bounds 错误
+	// 初始化所有结果为原始内容
 	for i, match := range matches {
 		original := strContent[match[0]:match[1]]
 		results[i] = TranslatedResult{match[0], match[1], original}
 	}
-
-	progressCh := make(chan DocumentProgress, st.maxConcurrentRequests*2+1)
-
-	// 创建带缓冲的 channel 用于优雅关闭
-	done := make(chan struct{})
 
 	wg := sync.WaitGroup{}
 	sem := semaphore.NewWeighted(int64(st.maxConcurrentRequests))
 
 	// 使用 context 的子 context 来控制 goroutine
 	childCtx, childCancel := context.WithCancel(st.ctx)
+	defer childCancel()
 
 	wg.Add(len(matches))
 	var doneCount int64
 
-	go func() {
-		defer close(done)
-		wg.Wait()
-	}()
+	// 错误通道
+	errCh := make(chan error, 1)
 
-	go func() {
-		defer close(progressCh)
-		defer childCancel()
+	for i, match := range matches {
+		go func(i int, start, end int) {
+			defer wg.Done()
 
-		for i, match := range matches {
-			go func(i int, start, end int) {
-				defer wg.Done()
-
-				// 首先检查上下文是否已取消，避免不必要的信号量获取
-				select {
-				case <-childCtx.Done():
-					return
-				default:
-				}
-
-				// 获取信号量以限制并发数，使用 select 来处理取消
-				acquireDone := make(chan error, 1)
-				go func() {
-					acquireDone <- sem.Acquire(childCtx, 1)
-				}()
-
-				select {
-				case <-childCtx.Done():
-					// 上下文已取消，直接返回，不再等待信号量
-					return
-				case err := <-acquireDone:
-					if err != nil {
-						// 获取信号量失败，但不再打印大量错误日志
-						return
-					}
-				}
-				defer sem.Release(1)
-
-				// 再次检查上下文是否已取消
-				select {
-				case <-childCtx.Done():
-					return
-				default:
-				}
-
-				text := strContent[match[2]:match[3]]
-
-				translated, tranErr := st.translateFunc(text)
-				current := int(atomic.AddInt64(&doneCount, 1))
-
-				if tranErr != nil {
-					// 只在非取消错误时记录日志
-					if !errors.Is(tranErr, context.Canceled) {
-						log.Printf("翻译文本 '%s' (文件: %s) 失败: %v\n", text, filePath, tranErr)
-					}
-					// 保持原始内容，results[i] 已经在上面设置过了
-					childCancel()
-					progressCh <- DocumentProgress{Text: text, Err: tranErr, Done: current, Total: total}
-					return
-				}
-
-				// 构造替换内容，对翻译结果进行XML转义
-				escapedTranslated := html.EscapeString(translated)
-				results[i] = TranslatedResult{start, end, fmt.Sprintf("<w:t>%s</w:t>", escapedTranslated)}
-
-				progressCh <- DocumentProgress{Text: text, Translated: translated, Done: current, Total: total}
-			}(i, match[0], match[1])
-		}
-
-		// 等待所有 goroutine 完成或上下文取消
-		select {
-		case <-childCtx.Done():
-			// 上下文取消，等待一定时间让 goroutines 清理，然后强制取消
-			childCancel()
+			// 首先检查上下文是否已取消
 			select {
-			case <-done:
-				// goroutines 已完成
-			case <-time.After(5 * time.Second):
-				// 超时，强制返回
-				log.Printf("文件 %s 处理超时，强制停止\n", filePath)
+			case <-childCtx.Done():
+				return
+			default:
 			}
-			progressCh <- DocumentProgress{Err: st.ctx.Err(), Done: int(atomic.LoadInt64(&doneCount)), Total: total}
-			return
-		case <-done:
-			// 所有 goroutines 已完成
+
+			// 获取信号量
+			if err := sem.Acquire(childCtx, 1); err != nil {
+				return
+			}
+			defer sem.Release(1)
+
+			// 再次检查上下文
+			select {
+			case <-childCtx.Done():
+				return
+			default:
+			}
+
+			text := strContent[match[2]:match[3]]
+
+			translated, tranErr := st.translateFunc(text)
+			current := int(atomic.AddInt64(&doneCount, 1))
+
+			if tranErr != nil {
+				if !errors.Is(tranErr, context.Canceled) {
+					log.Printf("翻译文本 '%s' (文件: %s) 失败: %v\n", text, filePath, tranErr)
+				}
+
+				if onProgress != nil {
+					onProgress(text, "", tranErr, current, total)
+				}
+
+				childCancel()
+				select {
+				case errCh <- tranErr:
+				default:
+				}
+				return
+			}
+
+			// 构造替换内容，对翻译结果进行XML转义
+			escapedTranslated := html.EscapeString(translated)
+			results[i] = TranslatedResult{start, end, fmt.Sprintf("<w:t>%s</w:t>", escapedTranslated)}
+
+			if onProgress != nil {
+				onProgress(text, translated, nil, current, total)
+			}
+		}(i, match[0], match[1])
+	}
+
+	// 等待完成
+	wg.Wait()
+	close(errCh)
+
+	// 检查是否有错误
+	select {
+	case err := <-errCh:
+		if err != nil {
+			return err
 		}
+	default:
+	}
 
-		// 检查上下文是否已取消
-		select {
-		case <-st.ctx.Done():
-			progressCh <- DocumentProgress{Err: st.ctx.Err(), Done: int(atomic.LoadInt64(&doneCount)), Total: total}
-			return
-		default:
-		}
+	// 检查上下文
+	select {
+	case <-st.ctx.Done():
+		return st.ctx.Err()
+	default:
+	}
 
-		// 替换内容（倒序替换避免索引错位）
-		var builder strings.Builder
-		last := 0
-		for _, r := range results {
-			builder.WriteString(strContent[last:r.start])
-			builder.WriteString(r.translated)
-			last = r.end
-		}
-		builder.WriteString(strContent[last:])
+	// 替换内容（倒序替换避免索引错位）
+	var builder strings.Builder
+	last := 0
+	for _, r := range results {
+		builder.WriteString(strContent[last:r.start])
+		builder.WriteString(r.translated)
+		last = r.end
+	}
+	builder.WriteString(strContent[last:])
 
-		// 写入文件
-		if err := os.WriteFile(filePath, []byte(builder.String()), 0644); err != nil {
-			progressCh <- DocumentProgress{Err: fmt.Errorf("写入文件 %s 失败: %w", filePath, err), Done: total, Total: total}
-			return
-		}
+	// 写入文件
+	if err := os.WriteFile(filePath, []byte(builder.String()), 0644); err != nil {
+		return fmt.Errorf("写入文件 %s 失败: %w", filePath, err)
+	}
 
-		log.Printf("文件 %s 处理完成。\n", filePath)
-	}()
-
-	return progressCh, nil
+	log.Printf("文件 %s 处理完成。\n", filePath)
+	return nil
 }
