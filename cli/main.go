@@ -27,8 +27,8 @@ func main() {
 	}
 
 	// 验证输入文件扩展名
-	if !strings.HasSuffix(strings.ToLower(inputFile), ".xlsx") {
-		log.Fatalf("输入文件必须是 .xlsx 格式: %s", inputFile)
+	if !strings.HasSuffix(strings.ToLower(inputFile), ".xlsx") && !strings.HasSuffix(strings.ToLower(inputFile), ".docx") {
+		log.Fatalf("输入文件必须是 .xlsx 或 .docx 格式: %s", inputFile)
 	}
 
 	// 确保输出目录存在

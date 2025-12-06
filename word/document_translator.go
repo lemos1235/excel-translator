@@ -59,7 +59,7 @@ func (st *DocumentTranslator) TranslateDocument(ctx context.Context, inputFile, 
 	}
 
 	// 处理 document.xml 文件
-	documentXmlFile := filepath.Join(tempDir, "Word", "document.xml")
+	documentXmlFile := filepath.Join(tempDir, "word", "document.xml")
 	if err := st.TranslateDocumentXmlFile(ctx, documentXmlFile, translateFunc); err != nil {
 		return err
 	}
@@ -206,7 +206,7 @@ func (st *DocumentTranslator) ZipWord(sourceDir, outputFile string) error {
 }
 
 // TranslateDocumentXmlFile 翻译 document.xml 文件
-func (st *DocumentTranslator) TranslateDocumentXmlFile(ctx context.Context, file string, translateFunc func(string) (string, error)) error {
+func (st *DocumentTranslator) TranslateDocumentXmlFile(ctx context.Context, filePath string, translateFunc func(string) (string, error)) error {
 	// 检查上下文是否已取消
 	select {
 	case <-ctx.Done():
@@ -214,19 +214,19 @@ func (st *DocumentTranslator) TranslateDocumentXmlFile(ctx context.Context, file
 	default:
 	}
 
-	re := regexp.MustCompile(`<w:t>(.*?)</w:t>`)
+	re := regexp.MustCompile(`<w:t[^>]*>(.*?)</w:t>`)
 
 	// 读取原始文件内容
-	content, err := os.ReadFile(file)
+	content, err := os.ReadFile(filePath)
 	if err != nil {
-		return fmt.Errorf("读取文件 %s 失败: %w", file, err)
+		return fmt.Errorf("读取文件 %s 失败: %w", filePath, err)
 	}
 	strContent := string(content)
 
 	// 匹配所有标签内容
 	matches := re.FindAllStringSubmatchIndex(strContent, -1)
 	if len(matches) == 0 {
-		log.Printf("文件 %s 中未找到需要翻译的文本。\n", file)
+		log.Printf("文件 %s 中未找到需要翻译的文本。\n", filePath)
 		return nil
 	}
 
@@ -298,7 +298,7 @@ func (st *DocumentTranslator) TranslateDocumentXmlFile(ctx context.Context, file
 			if tranErr != nil {
 				// 只在非取消错误时记录日志
 				if !errors.Is(tranErr, context.Canceled) {
-					log.Printf("翻译文本 '%s' (文件: %s) 失败: %v\n", text, file, tranErr)
+					log.Printf("翻译文本 '%s' (文件: %s) 失败: %v\n", text, filePath, tranErr)
 				}
 				// 保持原始内容，results[i] 已经在上面设置过了
 				return
@@ -326,7 +326,7 @@ func (st *DocumentTranslator) TranslateDocumentXmlFile(ctx context.Context, file
 			// goroutines 已完成
 		case <-time.After(5 * time.Second):
 			// 超时，强制返回
-			log.Printf("文件 %s 处理超时，强制停止\n", file)
+			log.Printf("文件 %s 处理超时，强制停止\n", filePath)
 		}
 		return ctx.Err()
 	case <-waitDone:
@@ -351,10 +351,10 @@ func (st *DocumentTranslator) TranslateDocumentXmlFile(ctx context.Context, file
 	builder.WriteString(strContent[last:])
 
 	// 写入文件
-	if err := os.WriteFile(file, []byte(builder.String()), 0644); err != nil {
-		return fmt.Errorf("写入文件 %s 失败: %w", file, err)
+	if err := os.WriteFile(filePath, []byte(builder.String()), 0644); err != nil {
+		return fmt.Errorf("写入文件 %s 失败: %w", filePath, err)
 	}
 
-	log.Printf("文件 %s 处理完成。\n", file)
+	log.Printf("文件 %s 处理完成。\n", filePath)
 	return nil
 }
