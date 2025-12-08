@@ -338,9 +338,21 @@ QGroupBox::title {
 func (mw *MainWindow) selectInputFile() {
 	startDir := mw.lastOpenDir
 	if startDir == "" {
-		startDir = os.Getenv("HOME")
-		if startDir == "" {
-			startDir = os.Getenv("USERPROFILE")
+		homeDir, err := os.UserHomeDir()
+		if err != nil || homeDir == "" {
+			homeDir = os.Getenv("HOME")
+			if homeDir == "" {
+				homeDir = os.Getenv("USERPROFILE")
+			}
+		}
+
+		if homeDir != "" {
+			downloadsDir := filepath.Join(homeDir, "Downloads")
+			if info, err := os.Stat(downloadsDir); err == nil && info.IsDir() {
+				startDir = downloadsDir
+			} else {
+				startDir = homeDir
+			}
 		}
 	}
 
