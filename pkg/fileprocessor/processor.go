@@ -107,7 +107,8 @@ func (fp *FileProcessor) processZipFile(f *zip.File, w *zip.Writer, translator f
 			strings.Contains(f.Name, "word/header") ||
 			strings.Contains(f.Name, "word/footer") ||
 			strings.Contains(f.Name, "xl/sharedStrings.xml") ||
-			strings.Contains(f.Name, "xl/drawings/drawing") || // Add xl/workbook.xml
+			strings.Contains(f.Name, "xl/drawings/drawing") ||
+			strings.Contains(f.Name, "xl/comments") ||
 			strings.Contains(f.Name, "xl/workbook.xml") {
 			needsTranslation = true
 		}

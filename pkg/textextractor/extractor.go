@@ -87,15 +87,17 @@ func (e *Extractor) Extract(content string, xmlType string) (string, []Extractio
 	// DOCX - word/document.xml, word/header*.xml, word/footer*.xml
 	if strings.Contains(xmlType, "word/document.xml") || strings.Contains(xmlType, "word/header") || strings.Contains(xmlType, "word/footer") {
 		//<w:t xml:space="preserve">Hello there! My name is McKenzie, and I studied abroad at United International College in Zhuhai in the fall semester of 2023. I</w:t>
-		re = regexp.MustCompile(`<w:t\b[^>]*?>(.*?)</w:t>`)
+		re = regexp.MustCompile(`(?s)<w:t\b[^>]*?>(.*?)</w:t>`)
 	} else if strings.Contains(xmlType, "xl/sharedStrings.xml") {
 		// Clean up phonetic annotations (furigana/ruby) which should not be translated
 		content = removePhoneticAnnotations(content)
 		// XLSX Shared Strings
-		re = regexp.MustCompile(`<t>(.*?)</t>`)
-	} else if strings.Contains(xmlType, "drawings/drawing") {
+		re = regexp.MustCompile(`(?s)<t>(.*?)</t>`)
+	} else if strings.Contains(xmlType, "xl/drawings/drawing") {
 		// XLSX Drawings (Shapes)
-		re = regexp.MustCompile(`<a:t>(.*?)</a:t>`)
+		re = regexp.MustCompile(`(?s)<a:t>(.*?)</a:t>`)
+	} else if strings.Contains(xmlType, "xl/comments") {
+		re = regexp.MustCompile(`(?s)<t>(.*?)</t>`)
 	} else if strings.Contains(xmlType, "xl/workbook.xml") {
 		// XLSX Workbook - sheet names
 		re = regexp.MustCompile(`<sheet name="([^"]+?)"[^>]*?>`)
