@@ -87,7 +87,7 @@ func (e *Extractor) Extract(content string, xmlType string) (string, []Extractio
 	// DOCX - word/document.xml, word/header*.xml, word/footer*.xml
 	if strings.Contains(xmlType, "word/document.xml") || strings.Contains(xmlType, "word/header") || strings.Contains(xmlType, "word/footer") {
 		//<w:t xml:space="preserve">Hello there! My name is McKenzie, and I studied abroad at United International College in Zhuhai in the fall semester of 2023. I</w:t>
-		re = regexp.MustCompile(`<w:t[^>]*?>(.*?)</w:t>`)
+		re = regexp.MustCompile(`<w:t\b[^>]*?>(.*?)</w:t>`)
 	} else if strings.Contains(xmlType, "xl/sharedStrings.xml") {
 		// Clean up phonetic annotations (furigana/ruby) which should not be translated
 		content = removePhoneticAnnotations(content)
@@ -98,7 +98,7 @@ func (e *Extractor) Extract(content string, xmlType string) (string, []Extractio
 		re = regexp.MustCompile(`<a:t>(.*?)</a:t>`)
 	} else if strings.Contains(xmlType, "xl/workbook.xml") {
 		// XLSX Workbook - sheet names
-		re = regexp.MustCompile(`<sheet name="([^"]+)"[^>]*?>`)
+		re = regexp.MustCompile(`<sheet name="([^"]+?)"[^>]*?>`)
 	} else {
 		return content, nil, nil // No translation needed
 	}
