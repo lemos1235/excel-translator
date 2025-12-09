@@ -23,8 +23,8 @@ import (
 
 // TranslationCallbacks 定义翻译流程中的回调。
 type TranslationCallbacks struct {
-	OnTranslated func(stage, original, translated string)
-	OnProgress   func(done, total int)
+	OnTranslated func(original, translated string)
+	OnProgress   func(phase string, done, total int)
 	OnError      func(stage string, err error)
 	OnComplete   func(err error)
 }
@@ -53,9 +53,6 @@ func RunTranslation(ctx context.Context, inputFile, outputFile string, cb Transl
 	fp := fileprocessor.NewFileProcessorWithLogger(logInstance)
 	fp.SetExtractorConfig(textextractor.ExtractorConfig{CJKOnly: cfg.Extractor.CJKOnly})
 
-	translationCount := 0      // Track translated items for progress
-	var totalCountEstimate int // Estimate total for progress bar
-
 	translator := func(text string) (string, error) {
 		select {
 		case <-ctx.Done():
@@ -72,17 +69,15 @@ func RunTranslation(ctx context.Context, inputFile, outputFile string, cb Transl
 
 		// Only emit translated event if actual translation occurred
 		if translatedText != text {
-			translationCount++
-			cb.OnTranslated("text", text, translatedText)
+			cb.OnTranslated(text, translatedText)
 		}
-
-		// Emit progress
-		cb.OnProgress(translationCount, totalCountEstimate)
 
 		return translatedText, nil
 	}
 
-	processingErr := fp.ProcessFile(inputFile, outputFile, translator)
+	processingErr := fp.ProcessFile(inputFile, outputFile, translator, func(fileName string, current, total int) {
+		cb.OnProgress(fileName, current, total)
+	})
 	if processingErr != nil {
 		logInstance.Errorf("File processing failed: %v", processingErr)
 		cb.OnError("fileprocessor", fmt.Errorf("file processing failed: %w", processingErr))
@@ -119,11 +114,10 @@ type MainWindow struct {
 	stopBtn     *qt.QPushButton  // 停止翻译按钮
 
 	// 应用状态
-	isTranslating    bool   // 当前是否正在翻译
-	translationCount int    // 已翻译的条目计数
-	tempOutputFile   string // 临时输出文件路径
-	lastOpenDir      string // 上次打开文件的目录
-	lastSaveDir      string // 上次保存文件的目录
+	isTranslating  bool   // 当前是否正在翻译
+	tempOutputFile string // 临时输出文件路径
+	lastOpenDir    string // 上次打开文件的目录
+	lastSaveDir    string // 上次保存文件的目录
 
 	// 协程控制
 	ctx    context.Context    // 用于取消翻译操作的上下文
@@ -401,7 +395,6 @@ func (mw *MainWindow) startTranslation() {
 	mw.tempOutputFile = tempFile
 
 	mw.isTranslating = true
-	mw.translationCount = 0
 	mw.updateButtonStates()
 
 	mw.addLog("开始翻译...")
@@ -454,25 +447,18 @@ func (mw *MainWindow) startTranslation() {
 		}
 
 		_ = RunTranslation(mw.ctx, inputFile, tempFile, TranslationCallbacks{
-			OnTranslated: func(stage, original, translated string) {
+			OnTranslated: func(original, translated string) {
 				mainthread.Wait(func() {
-					mw.translationCount++
-					mw.addLogUnsafe(fmt.Sprintf("[%d][%s] %s -> %s", mw.translationCount, stage, original, translated))
+					mw.addLogUnsafe(fmt.Sprintf("%s -> %s", original, translated))
 				})
 			},
-			OnProgress: func(done, total int) {
+			OnProgress: func(phase string, done, total int) {
 				mainthread.Wait(func() {
-					if total > 0 {
-						progress := done * 100 / total
-						if progress > 100 {
-							progress = 100
-						}
-						mw.progressBar.SetValue(progress)
-					} else {
-						// 没有总数时简单递增
-						next := (mw.translationCount % 100) + 1
-						mw.progressBar.SetValue(next)
+					progress := done * 100 / total
+					if progress > 100 {
+						progress = 100
 					}
+					mw.progressBar.SetValue(progress)
 				})
 			},
 			OnError: func(stage string, err error) {

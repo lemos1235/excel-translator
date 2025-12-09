@@ -70,12 +70,23 @@ func IsValidTextContent(s string) bool {
 	return isMeaningful
 }
 
-// ReplaceText finds text nodes in the content and replaces them using the replacer function.
-func (e *Extractor) ReplaceText(content string, xmlType string, replacer func(string) (string, error)) (string, error) {
+// ExtractionItem represents a text segment to be translated
+type ExtractionItem struct {
+	Text       string // The content to be translated
+	MatchStart int    // Start index of the full XML match
+	MatchEnd   int    // End index of the full XML match
+	TextStart  int    // Start index of the text content within the match
+	TextEnd    int    // End index of the text content within the match
+}
+
+// Extract finds text nodes in the content that need translation.
+// It returns the (potentially modified) content and a list of ExtractionItems.
+func (e *Extractor) Extract(content string, xmlType string) (string, []ExtractionItem, error) {
 	var re *regexp.Regexp
 
 	// DOCX - word/document.xml, word/header*.xml, word/footer*.xml
 	if strings.Contains(xmlType, "word/document.xml") || strings.Contains(xmlType, "word/header") || strings.Contains(xmlType, "word/footer") {
+		//<w:t xml:space="preserve">Hello there! My name is McKenzie, and I studied abroad at United International College in Zhuhai in the fall semester of 2023. I</w:t>
 		re = regexp.MustCompile(`<w:t[^>]*?>(.*?)</w:t>`)
 	} else if strings.Contains(xmlType, "xl/sharedStrings.xml") {
 		// Clean up phonetic annotations (furigana/ruby) which should not be translated
@@ -89,23 +100,18 @@ func (e *Extractor) ReplaceText(content string, xmlType string, replacer func(st
 		// XLSX Workbook - sheet names
 		re = regexp.MustCompile(`<sheet name="([^"]+)"[^>]*?>`)
 	} else {
-		return content, nil // No translation needed, return original content
+		return content, nil, nil // No translation needed
 	}
 
 	// Find all matches
 	matches := re.FindAllStringSubmatchIndex(content, -1)
 	if len(matches) == 0 {
-		return content, nil
+		return content, nil, nil
 	}
 
-	type Replacement struct {
-		Start int
-		End   int
-		Text  string
-	}
-	var replacements []Replacement
+	var items []ExtractionItem
 
-	// Extract and translate
+	// Extract
 	for _, match := range matches {
 		// match[0], match[1]: indices of the full match (e.g. <w:t>text</w:t>)
 		// match[2], match[3]: indices of the capture group (e.g. text)
@@ -129,11 +135,35 @@ func (e *Extractor) ReplaceText(content string, xmlType string, replacer func(st
 			continue
 		}
 
-		// Translate
-		translated, err := replacer(unescaped)
-		if err != nil {
-			return content, fmt.Errorf("failed to translate text '%s': %w", unescaped, err)
-		}
+		items = append(items, ExtractionItem{
+			Text:       unescaped,
+			MatchStart: match[0],
+			MatchEnd:   match[1],
+			TextStart:  match[2],
+			TextEnd:    match[3],
+		})
+	}
+
+	return content, items, nil
+}
+
+// Apply replaces the extracted items with their translations in the content.
+func (e *Extractor) Apply(content string, xmlType string, items []ExtractionItem, translations []string) (string, error) {
+	if len(items) != len(translations) {
+		return "", fmt.Errorf("items count (%d) and translations count (%d) do not match", len(items), len(translations))
+	}
+
+	if len(items) == 0 {
+		return content, nil
+	}
+
+	var sb strings.Builder
+	sb.Grow(len(content))
+
+	lastIndex := 0
+
+	for i, item := range items {
+		translated := translations[i]
 
 		// For sheet names, Excel has a 31-character limit
 		if strings.Contains(xmlType, "xl/workbook.xml") {
@@ -143,27 +173,14 @@ func (e *Extractor) ReplaceText(content string, xmlType string, replacer func(st
 		// Escape XML entities after translation
 		escapedTranslated := html.EscapeString(translated)
 
-		// Reconstruct the full tag/attribute with the translated content
-		// We keep the prefix (before the capture group) and suffix (after the capture group)
-		// prefix: content[match[0]:match[2]]
-		// suffix: content[match[3]:match[1]]
-		replacementStr := content[match[0]:match[2]] + escapedTranslated + content[match[3]:match[1]]
-
-		replacements = append(replacements, Replacement{
-			Start: match[0],
-			End:   match[1],
-			Text:  replacementStr,
-		})
+		sb.WriteString(content[lastIndex:item.MatchStart])
+		sb.WriteString(content[item.MatchStart:item.TextStart])
+		sb.WriteString(escapedTranslated)
+		sb.WriteString(content[item.TextEnd:item.MatchEnd])
+		lastIndex = item.MatchEnd
 	}
 
-	// Apply replacements
-	var sb strings.Builder
-	lastIndex := 0
-	for _, r := range replacements {
-		sb.WriteString(content[lastIndex:r.Start])
-		sb.WriteString(r.Text)
-		lastIndex = r.End
-	}
+	// Append remaining content
 	sb.WriteString(content[lastIndex:])
 
 	return sb.String(), nil

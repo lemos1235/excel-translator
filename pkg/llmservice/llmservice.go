@@ -81,9 +81,8 @@ func (s *LLMService) Translate(ctx context.Context, text string) (string, error)
 		s.mu.Lock()
 		s.cache[text] = translatedResult
 		s.mu.Unlock()
-		s.logger.Debugf("Translated text:\n\t[src] %s\n\t[dst] %s",
-			s.TruncateLog(text, 80),
-			s.TruncateLog(translatedResult, 200))
+		s.logger.Debugf("Translated text:\n%5s: %s\n%5s: %s",
+			"Orig", s.TruncateLog(text, 80), "Trans", s.TruncateLog(translatedResult, 200))
 		return translatedResult, nil
 	}
 	return "", translateErr
@@ -91,11 +90,13 @@ func (s *LLMService) Translate(ctx context.Context, text string) (string, error)
 
 // doTranslateRequest performs the API request using the openai-go library.
 func (s *LLMService) doTranslateRequest(ctx context.Context, text string) (string, error) {
-	s.logger.Tracef("Sending request to LLM for text: %s", text)
+	trimmed := strings.TrimSpace(text)
+
+	s.logger.Tracef("Sending request to LLM for trimmed: %s", trimmed)
 
 	params := openai.ChatCompletionNewParams{
 		Messages: []openai.ChatCompletionMessageParamUnion{
-			openai.UserMessage(s.config.Prompt + "\n\n" + text),
+			openai.UserMessage(s.config.Prompt + "\n\n" + trimmed),
 		},
 		Model:    s.config.Model,
 		Metadata: map[string]string{"enable_thinking": "false"},
