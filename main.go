@@ -197,7 +197,7 @@ func (mw *MainWindow) createTranslationPage() *qt.QWidget {
 	mw.progressBar.SetRange(0, 100)
 	mw.progressBar.SetValue(0)
 	mw.progressBar.SetTextVisible(false)
-	mw.progressBar.SetMinimumHeight(8)
+	mw.progressBar.SetFixedHeight(8)
 	leftLayout.AddWidget(mw.progressBar.QWidget)
 
 	buttonLayout := qt.NewQHBoxLayout2()
@@ -360,7 +360,7 @@ func (mw *MainWindow) selectInputFile() {
 		mw.inputFileEdit.SetText(fileName)
 		mw.lastOpenDir = filepath.Dir(fileName)
 		mw.logTextEdit.Clear()
-		mw.progressBar.SetValue(0)
+		mw.resetProgressBar()
 	}
 }
 
@@ -384,7 +384,7 @@ func (mw *MainWindow) startTranslation() {
 		return
 	}
 
-	mw.progressBar.SetValue(0)
+	mw.resetProgressBar()
 	mw.logTextEdit.Clear()
 
 	tempDir := os.TempDir()
@@ -429,19 +429,19 @@ func (mw *MainWindow) startTranslation() {
 					} else {
 						friendlyMsg = err.Error()
 					}
-
+					if mw.isTranslating {
+						mw.finishTranslation(false)
+					}
 					mw.addLogUnsafe(fmt.Sprintf("翻译失败: %s", friendlyMsg))
 					if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 						qt.QMessageBox_Critical(mw.window.QWidget, "错误", fmt.Sprintf("翻译失败: %s", friendlyMsg))
 					}
 				} else {
+					if mw.isTranslating {
+						mw.finishTranslation(true)
+					}
 					mw.addLogUnsafe("翻译完成!")
 					mw.promptSaveFile()
-				}
-
-				// 只有在还在翻译状态时才调用finishTranslation（防止stopTranslation已经处理过）
-				if mw.isTranslating {
-					mw.finishTranslation()
 				}
 			})
 		}
@@ -463,6 +463,9 @@ func (mw *MainWindow) startTranslation() {
 			},
 			OnError: func(stage string, err error) {
 				mainthread.Wait(func() {
+					if errors.Is(err, context.Canceled) {
+						return
+					}
 					if stage == "llm" {
 						mw.addLogUnsafe("翻译模型调用失败，请检查模型配置")
 					} else {
@@ -488,16 +491,12 @@ func (mw *MainWindow) stopTranslation() {
 	mw.addLog("用户停止翻译，正在清理资源...")
 
 	// 立即设置状态，避免重复调用
-	mw.isTranslating = false
-	mw.updateButtonStates()
+	mw.finishTranslation(false)
 
 	if mw.cancel != nil {
 		mw.cancel()
 		mw.addLog("翻译已停止")
 	}
-
-	// 设置进度条为100%表示操作完成
-	mw.progressBar.SetValue(100)
 }
 
 // updateButtonStates 根据当前翻译状态更新按钮的启用/禁用状态
@@ -511,11 +510,36 @@ func (mw *MainWindow) updateButtonStates() {
 	}
 }
 
+// resetProgressBar 重置进度条到初始状态
+func (mw *MainWindow) resetProgressBar() {
+	mw.progressBar.Reset()
+	mw.progressBar.SetStyleSheet("")
+}
+
 // finishTranslation 完成翻译后的UI状态恢复，重新启用开始按钮并禁用停止按钮
-func (mw *MainWindow) finishTranslation() {
+func (mw *MainWindow) finishTranslation(success bool) {
 	mw.isTranslating = false
 	mw.updateButtonStates()
 	mw.progressBar.SetValue(100)
+	if success {
+		mw.progressBar.SetStyleSheet(`
+QProgressBar {
+    background-color: #E6E6E6;
+    margin-top: 1px;
+    margin-bottom: 1px; 
+}
+QProgressBar::chunk { background-color: #4CAF50; border-radius: 3px; }
+`)
+	} else {
+		mw.progressBar.SetStyleSheet(`
+QProgressBar {
+    background-color: #E6E6E6;
+    margin-top: 1px;
+    margin-bottom: 1px; 
+}
+QProgressBar::chunk { background-color: #F44336; border-radius: 3px; }
+`)
+	}
 }
 
 // addLogUnsafe 添加日志到界面（非线程安全版本）
@@ -712,7 +736,7 @@ func (mw *MainWindow) setupDragAndDrop() {
 					mw.inputFileEdit.SetText(filePath)
 					mw.lastOpenDir = filepath.Dir(filePath)
 					mw.logTextEdit.Clear()
-					mw.progressBar.SetValue(0)
+					mw.resetProgressBar()
 					event.AcceptProposedAction()
 				} else {
 					qt.QMessageBox_Warning(mw.window.QWidget, "错误", "请拖拽Excel文件(.xlsx或.docx)")
