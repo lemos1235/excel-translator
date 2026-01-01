@@ -22,12 +22,11 @@ type LLMServiceConfig struct {
 
 // LLMService provides translation capabilities using an OpenAI-compatible API.
 type LLMService struct {
-	config            LLMServiceConfig
-	client            *openai.Client
-	cache             map[string]string // Cache for translated text
-	mu                sync.RWMutex      // Mutex for cache access
-	logger            *logger.Logger    // Logger instance
-	forceStreamModels map[string]bool   // Map to track forced streaming mode per model
+	config LLMServiceConfig
+	client *openai.Client
+	cache  map[string]string // Cache for translated text
+	mu     sync.RWMutex      // Mutex for cache access
+	logger *logger.Logger    // Logger instance
 }
 
 // NewLLMService creates a new LLMService instance.
@@ -38,15 +37,14 @@ func NewLLMService(config LLMServiceConfig, log *logger.Logger) *LLMService {
 		option.WithBaseURL(baseURL),
 		option.WithAPIKey(config.APIKey),
 		option.WithRequestTimeout(60*time.Second),
-		option.WithMaxRetries(2),
+		option.WithMaxRetries(3),
 	)
 
 	return &LLMService{
-		config:            config,
-		client:            &client,
-		cache:             make(map[string]string), // Initialize the cache map
-		logger:            log,                     // Assign the logger
-		forceStreamModels: make(map[string]bool),   // Initialize the force stream map
+		config: config,
+		client: &client,
+		cache:  make(map[string]string), // Initialize the cache map
+		logger: log,                     // Assign the logger
 	}
 }
 
@@ -102,18 +100,6 @@ func (s *LLMService) doTranslateRequest(ctx context.Context, text string) (strin
 		Metadata: map[string]string{"enable_thinking": "false"},
 	}
 
-	// Check if force streaming is enabled for the current model
-	s.mu.RLock()
-	forceStream := s.forceStreamModels[s.config.Model]
-	s.mu.RUnlock()
-
-	// If forceStream is true, directly use streaming mode
-	if forceStream {
-		s.logger.Tracef("Force streaming is enabled for model %s. Directly using streaming mode.", s.config.Model)
-		return s.doStreamTranslateRequest(ctx, params)
-	}
-
-	// Try standard (non-streaming) mode first
 	chatCompletion, err := s.client.Chat.Completions.New(ctx, params)
 	if err == nil {
 		if len(chatCompletion.Choices) == 0 {
@@ -125,43 +111,6 @@ func (s *LLMService) doTranslateRequest(ctx context.Context, text string) (strin
 		return result, nil
 	}
 
-	// If the error indicates only stream mode is supported, set forceStream and retry with streaming
-	if strings.Contains(err.Error(), "only support stream mode") {
-		s.logger.Debugf("API requires streaming mode for model %s, setting forceStream = true and falling back to stream: %v", s.config.Model, err)
-
-		s.mu.Lock()
-		s.forceStreamModels[s.config.Model] = true // Set the flag for this model
-		s.mu.Unlock()
-
-		return s.doStreamTranslateRequest(ctx, params)
-	}
-
 	s.logger.Errorf("Failed to create chat completion: %v", err)
 	return "", fmt.Errorf("failed to create chat completion: %w", err)
-}
-
-// doStreamTranslateRequest performs the API request using streaming mode.
-func (s *LLMService) doStreamTranslateRequest(ctx context.Context, params openai.ChatCompletionNewParams) (string, error) {
-	stream := s.client.Chat.Completions.NewStreaming(ctx, params)
-	defer stream.Close()
-
-	acc := openai.ChatCompletionAccumulator{}
-	for stream.Next() {
-		chunk := stream.Current()
-		acc.AddChunk(chunk)
-	}
-
-	if streamErr := stream.Err(); streamErr != nil {
-		s.logger.Errorf("Streaming request failed: %v", streamErr)
-		return "", fmt.Errorf("streaming request failed: %w", streamErr)
-	}
-
-	finalResult := acc.Choices[0].Message.Content
-	if finalResult == "" {
-		s.logger.Warnf("No content received in streaming response.")
-		return "", fmt.Errorf("no content received in streaming response")
-	}
-
-	s.logger.Tracef("Received streaming translation result: %s", s.TruncateLog(finalResult, 200))
-	return finalResult, nil
 }
