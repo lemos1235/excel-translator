@@ -38,7 +38,7 @@ func NewLLMService(config LLMServiceConfig, log *logger.Logger) *LLMService {
 		option.WithBaseURL(baseURL),
 		option.WithAPIKey(config.APIKey),
 		option.WithRequestTimeout(60*time.Second),
-		option.WithMaxRetries(12),
+		option.WithMaxRetries(2),
 	)
 
 	return &LLMService{

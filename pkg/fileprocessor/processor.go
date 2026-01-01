@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"exceltranslator/pkg/logger" // Import the logger package
 	"exceltranslator/pkg/textextractor"
+	"exceltranslator/pkg/translator"
 	"fmt"
 	"io"
 	"os"
@@ -35,8 +36,8 @@ func (fp *FileProcessor) SetExtractorConfig(config textextractor.ExtractorConfig
 }
 
 // ProcessFile processes the input docx/xlsx file and saves the translated version to outputPath.
-// The translator function takes the original text and returns the translated text and an error.
-func (fp *FileProcessor) ProcessFile(inputPath string, outputPath string, translator func(string) (string, error), progressCallback func(string, int, int)) error {
+// The translator performs translation operations and progress reporting.
+func (fp *FileProcessor) ProcessFile(inputPath string, outputPath string, trans translator.Translator) error {
 	fp.logger.Infof("Processing file: %s", inputPath)
 
 	// Open the zip file
@@ -68,7 +69,7 @@ func (fp *FileProcessor) ProcessFile(inputPath string, outputPath string, transl
 	// Iterate through the files in the archive
 	for _, f := range r.File {
 		fp.logger.Tracef("Processing internal file: %s", f.Name)
-		err := fp.processZipFile(f, w, translator, progressCallback)
+		err := fp.processZipFile(f, w, trans)
 		if err != nil {
 			fp.logger.Errorf("Failed to process internal file %s: %v", f.Name, err)
 			return fmt.Errorf("failed to process file %s: %w", f.Name, err)
@@ -80,7 +81,7 @@ func (fp *FileProcessor) ProcessFile(inputPath string, outputPath string, transl
 
 // processZipFile handles individual files within the zip archive.
 // It applies translation if the file is an XML document requiring text extraction.
-func (fp *FileProcessor) processZipFile(f *zip.File, w *zip.Writer, translator func(string) (string, error), progressCallback func(string, int, int)) error {
+func (fp *FileProcessor) processZipFile(f *zip.File, w *zip.Writer, trans translator.Translator) error {
 	// Open the file inside the zip
 	rc, err := f.Open()
 	if err != nil {
@@ -125,21 +126,15 @@ func (fp *FileProcessor) processZipFile(f *zip.File, w *zip.Writer, translator f
 			return fmt.Errorf("extraction failed for %s: %w", f.Name, err)
 		}
 
-		// 2. Translate text
-		var translations []string
-		totalItems := len(items)
+		// 2. Translate text batch
+		texts := make([]string, len(items))
 		for i, item := range items {
-			translated, err := translator(item.Text)
-			if err != nil {
-				fp.logger.Errorf("Translation failed for %s: %v", f.Name, err)
-				return fmt.Errorf("translation failed for %s: %w", f.Name, err)
-			}
-			translations = append(translations, translated)
-
-			// Report progress
-			if progressCallback != nil {
-				progressCallback(f.Name, i+1, totalItems)
-			}
+			texts[i] = item.Text
+		}
+		translations, err := trans.TranslateFileTexts(f.Name, texts)
+		if err != nil {
+			fp.logger.Errorf("Translation failed for %s: %v", f.Name, err)
+			return fmt.Errorf("translation failed for %s: %w", f.Name, err)
 		}
 
 		// 3. Apply replacements

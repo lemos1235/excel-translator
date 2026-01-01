@@ -19,6 +19,7 @@ import (
 	"exceltranslator/pkg/llmservice"
 	"exceltranslator/pkg/logger"
 	"exceltranslator/pkg/textextractor"
+	"exceltranslator/pkg/translator"
 )
 
 // TranslationCallbacks 定义翻译流程中的回调。
@@ -49,35 +50,21 @@ func RunTranslation(ctx context.Context, inputFile, outputFile string, cb Transl
 	}
 	llmService := llmservice.NewLLMService(llmCfg, logInstance)
 
+	// Create LocalTranslator with context, engine, and callbacks
+	translatorCallbacks := translator.TranslationCallbacks{
+		OnTranslated: cb.OnTranslated,
+		OnProgress:   cb.OnProgress,
+		OnError:      cb.OnError,
+		OnComplete:   cb.OnComplete,
+	}
+	trans := translator.NewTranslator(ctx, llmService, translatorCallbacks)
+
 	// Initialize File Processor
 	fp := fileprocessor.NewFileProcessorWithLogger(logInstance)
 	fp.SetExtractorConfig(textextractor.ExtractorConfig{CJKOnly: cfg.Extractor.CJKOnly})
 
-	translator := func(text string) (string, error) {
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err() // Context cancelled
-		default:
-			// Continue
-		}
-
-		translatedText, err := llmService.Translate(ctx, text)
-		if err != nil {
-			cb.OnError("llm", fmt.Errorf("LLM translation failed for text '%s': %w", text, err))
-			return "", err
-		}
-
-		// Only emit translated event if actual translation occurred
-		if translatedText != text {
-			cb.OnTranslated(text, translatedText)
-		}
-
-		return translatedText, nil
-	}
-
-	processingErr := fp.ProcessFile(inputFile, outputFile, translator, func(fileName string, current, total int) {
-		cb.OnProgress(fileName, current, total)
-	})
+	// Process file using the LocalTranslator
+	processingErr := fp.ProcessFile(inputFile, outputFile, trans)
 	if processingErr != nil {
 		logInstance.Errorf("File processing failed: %v", processingErr)
 		cb.OnError("fileprocessor", fmt.Errorf("file processing failed: %w", processingErr))
@@ -655,7 +642,7 @@ func copyFile(src, dst string) error {
 func (mw *MainWindow) createMenuBar() {
 	menuBar := qt.NewQMenuBar2()
 	mw.window.SetMenuBar(menuBar)
-	appMenu := menuBar.AddMenuWithTitle("Excel Translator")
+	appMenu := menuBar.AddMenuWithTitle("Excel LocalTranslator")
 	preferencesAction := qt.NewQAction2("Preferences...")
 	preferencesAction.SetShortcutsWithShortcuts(qt.QKeySequence__Preferences)
 	preferencesAction.OnTriggered(func() {
