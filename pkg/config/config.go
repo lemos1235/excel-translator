@@ -38,7 +38,7 @@ func DefaultConfig() *AppConfig {
 			BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
 			APIKey:  os.Getenv("DASHSCOPE_API_KEY"),
 			Model:   "qwen-flash",
-			Prompt:  "You are a professional translator. Translate it to Simplified Chinese directly. Keep all alphanu    meric characters unchanged. Ensure accuracy of technical terms. No explanations needed.",
+			Prompt:  "Translate to Simplified Chinese.Ignore if already Chinese. Keep all numbers and letters intact.",
 		},
 		Extractor: ExtractorConfig{
 			CJKOnly: false,
