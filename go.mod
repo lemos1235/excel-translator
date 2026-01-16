@@ -8,7 +8,6 @@ require (
 	github.com/mappu/miqt v0.12.0
 	github.com/openai/openai-go/v3 v3.16.0
 	github.com/pelletier/go-toml/v2 v2.2.4
-	github.com/progrium/darwinkit v0.5.0
 )
 
 require (
@@ -18,4 +17,4 @@ require (
 	github.com/tidwall/sjson v1.2.5 // indirect
 )
 
-replace github.com/progrium/darwinkit => ./darwinkit
+replace github.com/progrium/darwinkit => github.com/gysddn/darwinkit v0.0.0-20250116163834-ed09efd73eea
