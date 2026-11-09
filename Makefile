@@ -1,12 +1,22 @@
-NAME=Excel-Translator
-BINDIR=bin
-GOFILES=cmd/qt/*.go
-# 版本号取自 VERSION 文件（此处只读取，递增由各 build_*.sh 完成）
-FULL_VERSION=$(shell test -f VERSION && tr -d '[:space:]' < VERSION || echo dev)
-LDFLAGS_VERSION=-X exceltranslator/pkg/version.Full=$(FULL_VERSION)
+.PHONY: dev build test clean darwin-arm64 windows-amd64
+
+# 开发模式：修改 Go 代码后自动重新编译并重启
+dev:
+	go tool mygo dev
+
+# 构建当前平台的生产版本
+build:
+	go tool mygo build
 
 darwin-arm64:
-	GOARCH=arm64 GOOS=darwin go build -ldflags '-s -w $(LDFLAGS_VERSION)' -o $(BINDIR)/$(NAME)-$@ $(GOFILES)
+	go tool mygo build -platform darwin/arm64
 
 windows-amd64:
-	GOARCH=amd64 GOOS=windows go build -ldflags '-s -w -H windowsgui $(LDFLAGS_VERSION)' -o $(BINDIR)/$(NAME)-$@.exe $(GOFILES)
+	go tool mygo build -platform windows/amd64
+
+# 运行全部测试
+test:
+	go test ./...
+
+clean:
+	rm -rf build .mygo

@@ -35,14 +35,25 @@ max_concurrent_requests = 4
 
 ## GUI
 
-To install dependencies, please refer to https://github.com/mappu/miqt
+The GUI is built with [MyGo](https://github.com/egoist/mygo) native UI. It is pure Go and needs no Qt, cgo, or frontend toolchain.
 
-To compile and package:
+Development (live reload):
+
+```bash
+go tool mygo dev
+```
+
+Package for macOS or Windows:
 
 ```bash
 chmod +x ./build_macapp.sh
 ./build_macapp.sh
+
+chmod +x ./build_winapp.sh
+./build_winapp.sh
 ```
+
+Builds are written to `build/<os>-<arch>/`: a signed `.app` and `.dmg` on macOS, an `.exe` and installer on Windows.
 
 Screenshot:
 

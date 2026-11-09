@@ -24,10 +24,8 @@
 ._*
 .DS_Store
 Thumbs.db
-bin/
-out/
-miqt/
-native/
+/build/
+/.mygo/
 demo/
 !demo/screenshot.png
 

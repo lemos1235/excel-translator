@@ -21,7 +21,6 @@ type AppConfig struct {
 	LLM         LLMConfig         `toml:"llm" json:"llm"`
 	Translation TranslationConfig `toml:"translation" json:"translation"`
 	Log         LogConfig         `toml:"log" json:"log"`
-	Window      WindowConfig      `toml:"window" json:"window"`
 }
 
 type LLMConfig struct {
@@ -41,11 +40,6 @@ type LogConfig struct {
 	Disabled bool   `toml:"disabled" json:"disabled"`
 }
 
-type WindowConfig struct {
-	Width  int `toml:"width" json:"width"`
-	Height int `toml:"height" json:"height"`
-}
-
 // DefaultConfig returns the default configuration.
 func DefaultConfig() *AppConfig {
 	return &AppConfig{
@@ -62,10 +56,6 @@ func DefaultConfig() *AppConfig {
 		Log: LogConfig{
 			Level:    "INFO",
 			Disabled: false,
-		},
-		Window: WindowConfig{
-			Width:  0,
-			Height: 0,
 		},
 	}
 }

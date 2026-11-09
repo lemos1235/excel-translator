@@ -36,67 +36,17 @@ version_ldflags() {
     printf -- '-X exceltranslator/pkg/version.Full=%s' "$FULL_VERSION"
 }
 
-# generate_win_syso 生成 Windows 资源文件（.syso），同时嵌入图标与版本信息
-# 使得 exe 右键属性 -> 详细信息 中可以看到版本号
-# 用法: generate_win_syso <图标路径> <输出 syso 路径> <应用名>
-# 依赖 read_version/bump_version 已执行（需要 SHORT_VERSION/BUILD_NUMBER）
-generate_win_syso() {
-    local icon="$1" out="$2" app_name="$3"
+# sync_mygo_json 把 SHORT_VERSION 同步到 mygo.json 的 version 字段，
+# 供 mygo build 生成安装包、磁盘映像和文件属性时使用。
+sync_mygo_json() {
+    read_version
+    local root file tmp
+    root="$(dirname "$VERSION_FILE")"
+    file="$root/mygo.json"
+    [ -f "$file" ] || return 0
 
-    # 先删除可能残留的旧资源文件，避免生成失败时把陈旧版本信息链接进去
-    rm -f "$out"
-
-    # 安装 goversioninfo（注意清空 GOOS/GOARCH，避免交叉编译环境下装成 Windows 二进制）
-    if ! command -v goversioninfo &> /dev/null; then
-        echo ">>> 安装 goversioninfo 工具..."
-        GOOS="" GOARCH="" go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest
-    fi
-    if ! command -v goversioninfo &> /dev/null; then
-        echo "警告: 未找到 goversioninfo，跳过版本资源嵌入"
-        return 1
-    fi
-
-    # 语义化版本拆成 major.minor.patch，发布号作为第四段
-    local major minor patch
-    IFS='.' read -r major minor patch <<< "$SHORT_VERSION"
-    major=${major:-0}; minor=${minor:-0}; patch=${patch:-0}
-
-    local cfg
-    cfg="$(dirname "$out")/versioninfo.json"
-    cat > "$cfg" <<JSON
-{
-  "FixedFileInfo": {
-    "FileVersion": {"Major": $major, "Minor": $minor, "Patch": $patch, "Build": $BUILD_NUMBER},
-    "ProductVersion": {"Major": $major, "Minor": $minor, "Patch": $patch, "Build": $BUILD_NUMBER},
-    "FileFlagsMask": "3f",
-    "FileFlags": "00",
-    "FileOS": "040004",
-    "FileType": "01",
-    "FileSubType": "00"
-  },
-  "StringFileInfo": {
-    "CompanyName": "$app_name",
-    "FileDescription": "$app_name",
-    "FileVersion": "$major.$minor.$patch.$BUILD_NUMBER",
-    "InternalName": "$app_name.exe",
-    "LegalCopyright": "",
-    "OriginalFilename": "$app_name.exe",
-    "ProductName": "$app_name",
-    "ProductVersion": "$major.$minor.$patch.$BUILD_NUMBER"
-  },
-  "VarFileInfo": {
-    "Translation": {"LangID": "0409", "CharsetID": "04B0"}
-  },
-  "IconPath": "$icon",
-  "ManifestPath": ""
-}
-JSON
-
-    echo ">>> 嵌入图标与版本信息 ($major.$minor.$patch.$BUILD_NUMBER)..."
-    if ! goversioninfo -o "$out" "$cfg"; then
-        echo "警告: 版本资源生成失败，继续编译..."
-        rm -f "$cfg"
-        return 1
-    fi
-    rm -f "$cfg"
+    tmp="$(mktemp "${file}.XXXXXX")"
+    sed "s/\"version\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"version\": \"$SHORT_VERSION\"/" "$file" > "$tmp"
+    mv "$tmp" "$file"
+    echo ">>> mygo.json 版本: $SHORT_VERSION"
 }

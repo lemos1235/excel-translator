@@ -1,0 +1,11 @@
+{
+  "name": "Excel 翻译器",
+  "slug": "excel-translator",
+  "identifier": "com.lemos.exceltranslator",
+  "version": "1.0.0",
+  "main": "./cmd/mygo",
+  "out": "build",
+  "windows": {
+    "displayName": "Excel 翻译器"
+  }
+}

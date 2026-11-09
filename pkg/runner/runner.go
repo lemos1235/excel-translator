@@ -22,17 +22,6 @@ type TranslationCallbacks struct {
 	OnComplete        func(err error)
 }
 
-// RunTranslation 执行翻译流程，通过回调报告状态。
-func RunTranslation(ctx context.Context, inputFile, outputFile string, cb TranslationCallbacks) error {
-	// Load configuration
-	cfg, err := config.Load()
-	if err != nil {
-		return fmt.Errorf("failed to load configuration: %w", err)
-	}
-
-	return RunTranslationWithConfig(ctx, inputFile, outputFile, cfg, cb)
-}
-
 // RunTranslationWithConfig 执行翻译流程，使用传入的配置。
 func RunTranslationWithConfig(ctx context.Context, inputFile, outputFile string, cfg *config.AppConfig, cb TranslationCallbacks) error {
 	// Initialize logger

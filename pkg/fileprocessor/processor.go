@@ -24,11 +24,6 @@ type ExtractedDoc struct {
 	texts   []string
 }
 
-func NewFileProcessor() *FileProcessor {
-	// Default logger if not explicitly provided
-	return NewFileProcessorWithLogger(logger.NewLogger(100))
-}
-
 // NewFileProcessorWithLogger creates a new FileProcessor instance with a given logger.
 func NewFileProcessorWithLogger(log *logger.Logger) *FileProcessor {
 	return &FileProcessor{
