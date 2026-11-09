@@ -2,9 +2,9 @@ package fileprocessor
 
 import (
 	"archive/zip"
-	"exceltranslator/pkg/logger"
-	"exceltranslator/pkg/textextractor"
-	"exceltranslator/pkg/translator"
+	"ooxmltranslator/pkg/logger"
+	"ooxmltranslator/pkg/textextractor"
+	"ooxmltranslator/pkg/translator"
 	"fmt"
 	"io"
 	"os"
@@ -42,7 +42,7 @@ func (fp *FileProcessor) ProcessFileNew(inputPath string, outputPath string, tra
 	fp.logger.Infof("Processing file (New Workflow): %s", inputPath)
 
 	// 1. Create temporary directory
-	tempDir, err := os.MkdirTemp("", "exceltranslator_")
+	tempDir, err := os.MkdirTemp("", "ooxmltranslator_")
 	if err != nil {
 		return fmt.Errorf("failed to create temp dir: %w", err)
 	}

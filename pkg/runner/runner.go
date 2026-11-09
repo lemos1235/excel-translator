@@ -2,12 +2,12 @@ package runner
 
 import (
 	"context"
-	"exceltranslator/pkg/config"
-	"exceltranslator/pkg/fileprocessor"
-	"exceltranslator/pkg/llmservice"
-	"exceltranslator/pkg/logger"
-	"exceltranslator/pkg/textextractor"
-	"exceltranslator/pkg/translator"
+	"ooxmltranslator/pkg/config"
+	"ooxmltranslator/pkg/fileprocessor"
+	"ooxmltranslator/pkg/llmservice"
+	"ooxmltranslator/pkg/logger"
+	"ooxmltranslator/pkg/textextractor"
+	"ooxmltranslator/pkg/translator"
 	"fmt"
 )
 

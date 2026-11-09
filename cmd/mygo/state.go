@@ -13,8 +13,8 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
-	"exceltranslator/pkg/config"
-	"exceltranslator/pkg/runner"
+	"ooxmltranslator/pkg/config"
+	"ooxmltranslator/pkg/runner"
 )
 
 // maxLogLines 是日志缓冲区保留的最大行数，超出后从头部裁剪。
@@ -28,13 +28,16 @@ type app struct {
 	cfg *config.AppConfig
 
 	// 主线程字段
-	inputFile    string
-	lastOpenDir  string
-	lastSaveDir  string
-	settingsOpen bool
-	aboutOpen    bool
-	toast        string
-	logScroll    ui.ScrollState
+	inputFile   string
+	lastOpenDir string
+	lastSaveDir string
+	aboutOpen   bool
+	logScroll   ui.ScrollState
+	settingsWin *mygo.Window
+	// presentSettings 打开偏好设置窗口；测试中替换为空函数，避免创建真实窗口。
+	presentSettings func()
+	// alert 显示提示窗口；测试中替换为记录函数，避免打开真实的系统弹窗。
+	alert func(title, message string)
 
 	// 设置弹窗的草稿，取消时不污染 cfg
 	settingsDraft       config.AppConfig
@@ -92,8 +95,8 @@ func (a *app) acceptFile(path string) {
 		return
 	}
 	if !isOfficeFile(path) {
-		a.toast = "请选择 Office 文件（.xlsx / .docx / .pptx）"
-		a.invalidate()
+		a.showAlert(mygo.MessageWarning, "不支持的文件",
+			"请选择 Office 文件（.xlsx / .docx / .pptx）")
 		return
 	}
 
@@ -181,14 +184,12 @@ func (a *app) startTranslation() {
 	a.mu.Lock()
 	if a.translating {
 		a.mu.Unlock()
-		a.toast = "翻译正在进行中，请等待当前翻译完成"
-		a.invalidate()
+		a.showAlert(mygo.MessageInfo, "翻译进行中", "请等待当前翻译完成")
 		return
 	}
 	if a.inputFile == "" {
 		a.mu.Unlock()
-		a.toast = "请先选择要翻译的文件"
-		a.invalidate()
+		a.showAlert(mygo.MessageWarning, "未选择文件", "请先选择要翻译的文件")
 		return
 	}
 
@@ -318,7 +319,9 @@ func (a *app) promptSave(rc runContext) {
 	})
 	if err != nil || path == "" {
 		cleanupPath(rc.tempFile)
-		a.win.Update(func() { a.toast = "翻译已完成，但未保存文件" })
+		a.win.Update(func() {
+			a.showAlert(mygo.MessageInfo, "翻译已完成", "已取消保存，翻译结果未写入文件")
+		})
 		return
 	}
 
@@ -337,7 +340,20 @@ func (a *app) promptSave(rc runContext) {
 	dir := filepath.Dir(path)
 	a.win.Update(func() {
 		a.lastSaveDir = dir
-		a.toast = "文件已保存到: " + path
+	})
+}
+
+// showAlert 显示系统提示窗口，代替容易被忽略的底部 toast。
+func (a *app) showAlert(kind mygo.MessageType, title, message string) {
+	if a.alert != nil {
+		a.alert(title, message)
+		return
+	}
+	_, _ = mygo.Dialog.Message(mygo.MessageOptions{
+		Parent:  a.win,
+		Type:    kind,
+		Title:   title,
+		Message: message,
 	})
 }
 

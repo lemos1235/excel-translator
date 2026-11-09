@@ -1,12 +1,13 @@
 package main
 
 import (
+	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
-	"exceltranslator/pkg/config"
+	"ooxmltranslator/pkg/config"
 )
 
-// openSettings 从当前配置拷贝一份草稿，取消时直接丢弃。
+// openSettings 从当前配置拷贝一份草稿并打开偏好设置窗口，取消时直接丢弃。
 func (a *app) openSettings() {
 	a.settingsDraft = *a.cfg
 	a.settingsConcurrency = float64(a.settingsDraft.Translation.MaxConcurrentRequests)
@@ -14,51 +15,110 @@ func (a *app) openSettings() {
 		a.settingsConcurrency = 1
 	}
 	a.settingsError = ""
-	a.settingsOpen = true
-	a.invalidate()
+
+	if a.presentSettings != nil {
+		a.presentSettings()
+		return
+	}
+	a.showSettingsWindow()
 }
 
-func (a *app) settingsModal(c *ui.Context, t *ui.Theme) {
-	ui.Modal(c, &a.settingsOpen, func() {
-		ui.Column(c).Width(520).Gap(14).Padding(20).Children(func() {
-			ui.Text(c, "偏好设置").FontSize(18).Bold()
+// showSettingsWindow 打开偏好设置窗口，已在显示时只聚焦。
+func (a *app) showSettingsWindow() {
+	if a.settingsWin != nil && !a.settingsWin.IsDestroyed() {
+		a.settingsWin.Show()
+		a.settingsWin.Focus()
+		return
+	}
 
-			ui.Form(c, func() {
-				ui.Field(c, "API Key", func() {
-					ui.TextInput(c, &a.settingsDraft.LLM.APIKey).Password()
+	win := mygo.NewWindow(mygo.WindowOptions{
+		Title:     "偏好设置",
+		Width:     540,
+		Height:    520,
+		MinWidth:  480,
+		MinHeight: 500,
+		Content:   ui.View(a.settingsView),
+	})
+	a.settingsWin = win
+	win.OnClosed(func() {
+		if a.settingsWin == win {
+			a.settingsWin = nil
+		}
+		a.settingsError = ""
+	})
+}
+
+// settingsView 构建偏好设置窗口的内容：两个分组框，底部是保存与取消。
+func (a *app) settingsView(c *ui.Context) {
+	c.SetTheme(settingsTheme)
+	t := c.Theme()
+
+	ui.Column(c).Fill().Padding(20).Gap(14).Children(func() {
+		ui.Form(c, func() {
+			a.settingsSection(c, "LLM 配置", func() {
+				ui.Field(c, "API Key:", func() {
+					ui.TextInput(c, &a.settingsDraft.LLM.APIKey).Password().
+						Background(colorInput)
 				})
-				ui.Field(c, "API URL", func() {
-					ui.TextInput(c, &a.settingsDraft.LLM.BaseURL)
+				ui.Field(c, "API URL:", func() {
+					ui.TextInput(c, &a.settingsDraft.LLM.BaseURL).
+						Background(colorInput)
 				})
-				ui.Field(c, "模型", func() {
-					ui.TextInput(c, &a.settingsDraft.LLM.Model)
+				ui.Field(c, "模型:", func() {
+					ui.TextInput(c, &a.settingsDraft.LLM.Model).
+						Background(colorInput)
 				})
-				ui.Field(c, "翻译提示词", func() {
-					ui.TextArea(c, &a.settingsDraft.LLM.Prompt).Lines(4, 8)
-				})
-				ui.Field(c, "最大并发请求数", func() {
-					ui.NumberInput(c, &a.settingsConcurrency, 1, 20, 1)
-				})
-				ui.Field(c, "仅翻译 CJK 文本", func() {
+			})
+
+			a.settingsSection(c, "客户端配置", func() {
+				ui.Field(c, "仅翻译CJK文本:", func() {
 					ui.Checkbox(c, &a.settingsDraft.Translation.CJKOnly, "")
 				})
+				ui.Field(c, "翻译提示词:", func() {
+					ui.TextArea(c, &a.settingsDraft.LLM.Prompt).Lines(4, 8).
+						Background(colorInput)
+				})
+				ui.Field(c, "最大并发请求数:", func() {
+					ui.Themed(c, stepperTheme).Children(func() {
+						ui.NumberInput(c, &a.settingsConcurrency, 1, 20, 1)
+					})
+				})
 			})
+		}).Gap(20)
 
-			if a.settingsError != "" {
-				ui.Text(c, a.settingsError).FontSize(12).TextColor(t.Danger).Wrap()
+		ui.Spacer(c)
+
+		if a.settingsError != "" {
+			ui.Text(c, a.settingsError).FontSize(12).TextColor(t.Danger).Wrap()
+		}
+
+		ui.Row(c).Justify(ui.Center).Gap(20).Children(func() {
+			if ui.PrimaryButton(c, "保存").Width(80).Padding(2.5, 10).Radius(6).Clicked() {
+				a.saveSettings()
 			}
-
-			ui.Row(c).Justify(ui.End).Gap(8).Children(func() {
-				if ui.Button(c, "取消").Clicked() {
-					a.settingsOpen = false
-					a.settingsError = ""
-				}
-				if ui.PrimaryButton(c, "保存").Clicked() {
-					a.saveSettings()
-				}
-			})
+			if ui.Button(c, "取消").Width(80).Padding(2.5, 10).Radius(6).Clicked() {
+				a.cancelSettings()
+			}
 		})
 	})
+}
+
+// settingsSection 画出参考图里的分组框：标题压在框线之上，字段由外层 Form 统一对齐。
+func (a *app) settingsSection(c *ui.Context, legend string, fn func()) {
+	t := c.Theme()
+	ui.Column(c).Gap(0).Children(func() {
+		ui.Text(c, legend).FontSize(13).Bold().
+			Background(colorBackground).Padding(0, 0, 4)
+		ui.Column(c).Padding(14).Gap(8).Radius(6).
+			Border(1, t.Border).Background(colorPanel).Children(fn)
+	})
+}
+
+func (a *app) cancelSettings() {
+	a.settingsError = ""
+	if a.settingsWin != nil && !a.settingsWin.IsDestroyed() {
+		a.settingsWin.Close()
+	}
 }
 
 func (a *app) saveSettings() {
@@ -77,12 +137,19 @@ func (a *app) saveSettings() {
 	if err := save(a.cfg); err != nil {
 		*a.cfg = previous
 		a.settingsError = "保存配置失败: " + err.Error()
-		a.invalidate()
+		a.invalidateSettings()
 		return
 	}
 
-	a.settingsOpen = false
 	a.settingsError = ""
-	a.toast = "配置已保存"
-	a.invalidate()
+	if a.settingsWin != nil && !a.settingsWin.IsDestroyed() {
+		a.settingsWin.Close()
+	}
+}
+
+// invalidateSettings 刷新偏好设置窗口。
+func (a *app) invalidateSettings() {
+	if a.settingsWin != nil && !a.settingsWin.IsDestroyed() {
+		a.settingsWin.Invalidate()
+	}
 }

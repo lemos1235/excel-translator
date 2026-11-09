@@ -6,7 +6,7 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"exceltranslator/pkg/config"
+	"ooxmltranslator/pkg/config"
 )
 
 func TestIsOfficeFile(t *testing.T) {
@@ -48,24 +48,28 @@ func TestNarrowWindowHidesLogPanel(t *testing.T) {
 	}
 }
 
-func TestSettingsModalOpenAndCancel(t *testing.T) {
+func TestSettingsOpenAndCancel(t *testing.T) {
 	a := newApp(config.DefaultConfig())
+	opened := false
+	a.presentSettings = func() { opened = true }
 	originalKey := a.cfg.LLM.APIKey
 
-	tt := ui.NewTester(a.view, 800, 400)
+	tt := ui.NewTester(a.view, 800, 600)
 	if err := tt.Click("设置"); err != nil {
 		t.Fatalf("click settings: %v", err)
 	}
-	if !tt.HasText("偏好设置") {
-		t.Fatalf("settings modal did not open: %q", tt.Texts())
+	if !opened {
+		t.Fatal("settings window was not opened")
+	}
+
+	vt := ui.NewTester(a.settingsView, 540, 540)
+	if !vt.HasText("LLM 配置") || !vt.HasText("客户端配置") {
+		t.Fatalf("settings view missing sections: %q", vt.Texts())
 	}
 
 	a.settingsDraft.LLM.APIKey = "changed"
-	if err := tt.Click("取消"); err != nil {
+	if err := vt.Click("取消"); err != nil {
 		t.Fatalf("click cancel: %v", err)
-	}
-	if tt.HasText("偏好设置") {
-		t.Error("settings modal still open after cancel")
 	}
 	if a.cfg.LLM.APIKey != originalKey {
 		t.Errorf("cancel changed config: %q", a.cfg.LLM.APIKey)
@@ -74,6 +78,7 @@ func TestSettingsModalOpenAndCancel(t *testing.T) {
 
 func TestSettingsSaveKeepsDraft(t *testing.T) {
 	a := newApp(config.DefaultConfig())
+	a.presentSettings = func() {}
 
 	var saved *config.AppConfig
 	a.saveConfigFn = func(cfg *config.AppConfig) error {
@@ -87,7 +92,7 @@ func TestSettingsSaveKeepsDraft(t *testing.T) {
 	a.settingsDraft.LLM.Model = "test-model"
 	a.settingsConcurrency = 8
 
-	tt := ui.NewTester(a.view, 800, 400)
+	tt := ui.NewTester(a.settingsView, 540, 540)
 	if err := tt.Click("保存"); err != nil {
 		t.Fatalf("click save: %v", err)
 	}
@@ -101,9 +106,6 @@ func TestSettingsSaveKeepsDraft(t *testing.T) {
 	if saved.Translation.MaxConcurrentRequests != 8 {
 		t.Errorf("max concurrent = %d, want 8", saved.Translation.MaxConcurrentRequests)
 	}
-	if a.settingsOpen {
-		t.Error("settings modal still open after save")
-	}
 	if a.cfg.LLM.APIKey != "sk-test" {
 		t.Errorf("in-memory config not updated: %q", a.cfg.LLM.APIKey)
 	}
@@ -111,22 +113,28 @@ func TestSettingsSaveKeepsDraft(t *testing.T) {
 
 func TestAcceptFileRejectsUnsupportedExtension(t *testing.T) {
 	a := newApp(config.DefaultConfig())
+	var alerts []string
+	a.alert = func(title, message string) { alerts = append(alerts, title+": "+message) }
+
 	a.acceptFile(filepath.Join(t.TempDir(), "notes.pdf"))
 
 	if a.inputFile != "" {
 		t.Errorf("unsupported file accepted: %q", a.inputFile)
 	}
-	if a.toast == "" {
-		t.Error("expected an error toast for unsupported extension")
+	if len(alerts) == 0 {
+		t.Error("expected an alert for unsupported extension")
 	}
 }
 
 func TestStartTranslationWithoutFile(t *testing.T) {
 	a := newApp(config.DefaultConfig())
+	var alerts []string
+	a.alert = func(title, message string) { alerts = append(alerts, title+": "+message) }
+
 	a.startTranslation()
 
-	if a.toast == "" {
-		t.Error("expected a toast when no file is selected")
+	if len(alerts) == 0 {
+		t.Error("expected an alert when no file is selected")
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()

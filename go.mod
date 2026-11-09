@@ -1,4 +1,4 @@
-module exceltranslator
+module ooxmltranslator
 
 go 1.27.3
 

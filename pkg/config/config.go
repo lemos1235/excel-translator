@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	AppName  = "Excel-Translator"
+	AppName  = "OOXML-Translator"
 	FileName = "config.toml"
 )
 

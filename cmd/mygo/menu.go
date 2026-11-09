@@ -33,6 +33,9 @@ func (a *app) installMenu() {
 				mygo.Separator(),
 				{Role: mygo.RoleQuit},
 			}},
+			// 「文件」菜单在无文档的 macOS 应用中只展开为「关闭窗口 Cmd+W」。
+			// 不显式加上它，自定义菜单就没有任何菜单项承载 Cmd+W。
+			{Role: mygo.RoleFileMenu},
 			{Role: mygo.RoleEditMenu},
 			{Role: mygo.RoleWindowMenu},
 		}

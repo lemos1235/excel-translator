@@ -3,7 +3,7 @@
 # 版本号工具（供各构建脚本 source 使用）
 #
 # 版本号维护在仓库根目录的 VERSION 文件中，格式为 <语义化版本>+<发布号>，
-# 例如 1.0.0+2。构建时通过 ldflags 注入到 exceltranslator/pkg/version.Full。
+# 例如 1.0.0+2。构建时通过 ldflags 注入到 ooxmltranslator/pkg/version.Full。
 # =============================================================================
 
 # 兜底 $0：脚本被非 bash 的 shell（如 zsh）source 时 BASH_SOURCE 未定义
@@ -33,7 +33,7 @@ bump_version() {
 
 # version_ldflags 输出注入版本号所需的 ldflags 片段
 version_ldflags() {
-    printf -- '-X exceltranslator/pkg/version.Full=%s' "$FULL_VERSION"
+    printf -- '-X ooxmltranslator/pkg/version.Full=%s' "$FULL_VERSION"
 }
 
 # sync_mygo_json 把 SHORT_VERSION 同步到 mygo.json 的 version 字段，

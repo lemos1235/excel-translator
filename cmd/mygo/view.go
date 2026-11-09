@@ -8,53 +8,69 @@ import (
 
 // view 构建主界面。它始终在主线程执行，只读取状态快照，不阻塞。
 func (a *app) view(c *ui.Context) {
+	c.SetTheme(appTheme)
 	t := c.Theme()
 
 	translating, progress, _, logs := a.snapshot()
 
-	if a.toast != "" {
-		c.Toast(a.toast)
-		a.toast = ""
-	}
-
 	width, _ := c.Size()
-	ui.Column(c).Fill().Padding(14, 16).Gap(12).Children(func() {
-		// 右上角设置入口
+	ui.Column(c).Fill().Padding(6, 16).Gap(8).Children(func() {
+		// 右上角设置入口：无边框的齿轮图标，悬停时淡淡高亮。
 		ui.Row(c).Justify(ui.End).Children(func() {
-			if ui.Button(c, "设置").Label("设置").Tooltip("偏好设置").Clicked() {
+			settings := ui.ButtonBase(c).Size(20, 20).Radius(t.Radius).
+				Label("设置").Tooltip("偏好设置").
+				Children(func() {
+					ui.Icon(c, gearIcon).Size(12, 12).TextColor(t.TextMuted)
+				})
+			switch {
+			case settings.Pressed():
+				settings.Background(ui.RGBA(255, 255, 255, 0.14))
+			case settings.Hovered():
+				settings.Background(ui.RGBA(255, 255, 255, 0.08))
+			}
+			if settings.Clicked() {
 				a.openSettings()
 			}
 		})
 
 		if width >= 640 {
-			ui.Row(c).Grow(1).Gap(20).AlignItems(ui.Stretch).Children(func() {
-				a.leftPanel(c, t, translating, progress)
+			ui.Row(c).Grow(1).Gap(20).AlignItems(ui.Stretch).
+				Margin(0, 0, 8, 0).Children(func() {
+				a.leftPanel(c, t, translating, progress, false)
 				a.logPanel(c, t, logs)
 			})
 		} else {
-			ui.Row(c).Grow(1).Justify(ui.Center).Children(func() {
-				a.leftPanel(c, t, translating, progress)
+			ui.Row(c).Grow(1).AlignItems(ui.Stretch).
+				Margin(0, 0, 8, 0).Children(func() {
+				a.leftPanel(c, t, translating, progress, true)
 			})
 		}
 	})
 
-	a.settingsModal(c, t)
 	a.aboutModal(c)
 }
 
-// leftPanel 构建左侧文件选择、进度和开始/停止按钮。
-func (a *app) leftPanel(c *ui.Context, t *ui.Theme, translating bool, progress float64) {
-	ui.Column(c).Width(350).Padding(15).Gap(20).Radius(10).
-		Border(1, t.Border).Children(func() {
+// leftPanel 构建左侧文件选择、进度和开始/停止按钮。grow 为真时
+// 面板填满窄窗口的可用宽度，避免两侧留下大片空白。
+func (a *app) leftPanel(c *ui.Context, t *ui.Theme, translating bool, progress float64, grow bool) {
+	panel := ui.Column(c).Padding(15).Gap(20).Radius(10).
+		Border(1, t.Border).Background(colorPanel)
+	if grow {
+		panel.Grow(1)
+	} else {
+		panel.Width(350)
+	}
+	panel.Children(func() {
 		zone := ui.Column(c).MinHeight(220).Padding(15).Gap(10).Radius(10).
-			Border(1, t.Border)
+			Border(1, t.Border).Background(colorZone)
 
 		zone.Children(func() {
 			ui.Text(c, "拖拽文件到此区域或点击浏览文件").
 				TextColor(t.TextMuted).TextAlign(ui.Center)
 			ui.TextInput(c, &a.inputFile).ReadOnly(true).
+				Background(colorInput).
 				Placeholder("选择要翻译的 Excel/Word/PPT 文件…")
-			if ui.Button(c, "浏览文件…").Clicked() {
+			if appButton(c, "浏览文件…", false).Clicked() {
 				a.chooseInputFile()
 			}
 		})
@@ -69,12 +85,10 @@ func (a *app) leftPanel(c *ui.Context, t *ui.Theme, translating bool, progress f
 		ui.Progress(c, progress).Height(8)
 
 		ui.Row(c).Justify(ui.Center).Gap(20).Children(func() {
-			if ui.PrimaryButton(c, "开始翻译").Width(88).
-				Disabled(translating).Clicked() {
+			if appPrimaryButton(c, "开始翻译", translating).Width(80).Clicked() {
 				a.startTranslation()
 			}
-			if ui.Button(c, "停止翻译").Width(88).
-				Disabled(!translating).Clicked() {
+			if appButton(c, "停止翻译", !translating).Width(80).Clicked() {
 				a.stopTranslation()
 			}
 		})
@@ -86,21 +100,21 @@ func (a *app) leftPanel(c *ui.Context, t *ui.Theme, translating bool, progress f
 
 // logPanel 构建右侧日志区，用户停留在底部时自动跟随新日志。
 func (a *app) logPanel(c *ui.Context, t *ui.Theme, logs []string) {
-	ui.Column(c).Grow(1).Gap(6).Children(func() {
+	// 右侧内边距比其他三边小，让滚动条贴近面板边缘；滚动内容自身
+	// 仍保留左右留白，避免文字与滚动条重叠。
+	ui.Column(c).Grow(1).Gap(6).Padding(10, 4, 10, 10).Radius(10).
+		Border(1, t.Border).Background(colorPanel).Children(func() {
 		ui.Text(c, "日志").Bold()
 
-		ui.Column(c).Grow(1).Padding(8).Radius(10).
-			Border(1, t.Border).Children(func() {
-			if a.logScroll.Y >= a.logScroll.MaxY {
-				a.logScroll.Y = math.MaxFloat32
-			}
+		if a.logScroll.Y >= a.logScroll.MaxY {
+			a.logScroll.Y = math.MaxFloat32
+		}
 
-			ui.Scroll(c).TrackScroll(&a.logScroll).Grow(1).
-				KeepScrollbars(true).Children(func() {
-				for _, line := range logs {
-					ui.Text(c, line).FontSize(12).Font("monospace").Wrap()
-				}
-			})
+		ui.Scroll(c).TrackScroll(&a.logScroll).Grow(1).Padding(2, 10, 2, 0).
+			KeepScrollbars(true).Children(func() {
+			for _, line := range logs {
+				ui.Text(c, line).FontSize(12).Font("monospace").Wrap()
+			}
 		})
 	})
 }
