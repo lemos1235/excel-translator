@@ -50,23 +50,24 @@ func (a *app) showSettingsWindow() {
 
 // settingsView 构建偏好设置窗口的内容：两个分组框，底部是保存与取消。
 func (a *app) settingsView(c *ui.Context) {
-	c.SetTheme(settingsTheme)
-	t := c.Theme()
+	t := settingsThemeFor(c.Theme())
+	c.SetTheme(t)
+	pal := paletteFor(t)
 
 	ui.Column(c).Fill().Padding(20).Gap(14).Children(func() {
 		ui.Form(c, func() {
 			a.settingsSection(c, "LLM 配置", func() {
 				ui.Field(c, "API Key:", func() {
 					ui.TextInput(c, &a.settingsDraft.LLM.APIKey).Password().
-						Background(colorInput)
+						Background(pal.input)
 				})
 				ui.Field(c, "API URL:", func() {
 					ui.TextInput(c, &a.settingsDraft.LLM.BaseURL).
-						Background(colorInput)
+						Background(pal.input)
 				})
 				ui.Field(c, "模型:", func() {
 					ui.TextInput(c, &a.settingsDraft.LLM.Model).
-						Background(colorInput)
+						Background(pal.input)
 				})
 			})
 
@@ -76,10 +77,10 @@ func (a *app) settingsView(c *ui.Context) {
 				})
 				ui.Field(c, "翻译提示词:", func() {
 					ui.TextArea(c, &a.settingsDraft.LLM.Prompt).Lines(4, 8).
-						Background(colorInput)
+						Background(pal.input)
 				})
 				ui.Field(c, "最大并发请求数:", func() {
-					ui.Themed(c, stepperTheme).Children(func() {
+					ui.Themed(c, stepperThemeFor(t)).Children(func() {
 						ui.NumberInput(c, &a.settingsConcurrency, 1, 20, 1)
 					})
 				})
@@ -106,11 +107,12 @@ func (a *app) settingsView(c *ui.Context) {
 // settingsSection 画出参考图里的分组框：标题压在框线之上，字段由外层 Form 统一对齐。
 func (a *app) settingsSection(c *ui.Context, legend string, fn func()) {
 	t := c.Theme()
+	pal := paletteFor(t)
 	ui.Column(c).Gap(0).Children(func() {
 		ui.Text(c, legend).FontSize(13).Bold().
-			Background(colorBackground).Padding(0, 0, 4)
+			Background(t.Background).Padding(0, 0, 4)
 		ui.Column(c).Padding(14).Gap(8).Radius(6).
-			Border(1, t.Border).Background(colorPanel).Children(fn)
+			Border(1, t.Border).Background(pal.panel).Children(fn)
 	})
 }
 

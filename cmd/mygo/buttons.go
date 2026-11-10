@@ -2,34 +2,29 @@ package main
 
 import "github.com/egoist/mygo/ui"
 
-// 按钮的颜色：灰色填充配纯白文字，深灰细边给边缘一个清晰轮廓。
-var (
-	buttonFill         = ui.Hex("#5a5a5a")
-	buttonFillDisabled = ui.Hex("#4a4a4a")
-	buttonText         = ui.Hex("#ffffff")
-	buttonEdge         = ui.Hex("#3a3a3a")
-)
-
-// appButton 画出参考图里的普通按钮。
+// appButton 画出参考图里的普通按钮，填充取当前主题的灰阶。
 func appButton(c *ui.Context, label string, disabled bool) ui.Element {
-	return styleAppButton(ui.Button(c, label), buttonFill, disabled)
+	pal := paletteFor(c.Theme())
+	return styleAppButton(ui.Button(c, label), pal, pal.buttonFill, pal.buttonEdge, pal.buttonText, disabled)
 }
 
 // appPrimaryButton 画出参考图里的主按钮，填充取当前主题的强调色。
 func appPrimaryButton(c *ui.Context, label string, disabled bool) ui.Element {
-	return styleAppButton(ui.PrimaryButton(c, label), c.Theme().Accent, disabled)
+	t := c.Theme()
+	return styleAppButton(ui.PrimaryButton(c, label), paletteFor(t), t.Accent, t.Accent, t.AccentText, disabled)
 }
 
-// styleAppButton 给按钮套上灰色填充。
-func styleAppButton(b ui.Element, fill ui.Color, disabled bool) ui.Element {
+// styleAppButton 给按钮套上当前主题的填充、描边与文字颜色。
+func styleAppButton(b ui.Element, pal *palette, fill, edge, text ui.Color, disabled bool) ui.Element {
 	if disabled {
-		fill = buttonFillDisabled
+		fill = pal.buttonFillDisabled
+		text = pal.buttonTextDisabled
 	}
 	return b.
 		Disabled(disabled).
 		Background(fill).
-		TextColor(buttonText).
+		TextColor(text).
 		Padding(2.5, 10).
 		Radius(6).
-		Border(1, buttonEdge)
+		Border(1, edge)
 }

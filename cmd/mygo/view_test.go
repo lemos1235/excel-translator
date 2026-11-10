@@ -1,6 +1,7 @@
 package main
 
 import (
+	"image"
 	"path/filepath"
 	"testing"
 
@@ -8,6 +9,26 @@ import (
 
 	"ooxmltranslator/pkg/config"
 )
+
+func TestViewFollowsSystemAppearance(t *testing.T) {
+	a := newApp(config.DefaultConfig())
+	tt := ui.NewTesterWith(a.view, 800, 400, ui.TesterOptions{Dark: true})
+	if l := backgroundLuminance(tt.Image()); l > 0.4 {
+		t.Errorf("dark appearance background is too light: %.2f", l)
+	}
+
+	tt.SetDark(false)
+	tt.Frame()
+	if l := backgroundLuminance(tt.Image()); l < 0.6 {
+		t.Errorf("light appearance background is too dark: %.2f", l)
+	}
+}
+
+// backgroundLuminance 取窗口左上角像素的平均通道值，代表窗口背景明暗。
+func backgroundLuminance(img *image.RGBA) float64 {
+	r, g, b, _ := img.At(0, 0).RGBA()
+	return float64(r+g+b) / (3 * 65535)
+}
 
 func TestIsOfficeFile(t *testing.T) {
 	cases := map[string]bool{

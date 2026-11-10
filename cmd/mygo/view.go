@@ -8,8 +8,10 @@ import (
 
 // view 构建主界面。它始终在主线程执行，只读取状态快照，不阻塞。
 func (a *app) view(c *ui.Context) {
-	c.SetTheme(appTheme)
-	t := c.Theme()
+	// 先取框架按系统外观给出的默认主题，再换成同明暗的自定义配色。
+	t := appThemeFor(c.Theme())
+	c.SetTheme(t)
+	pal := paletteFor(t)
 
 	translating, progress, _, logs := a.snapshot()
 
@@ -24,9 +26,9 @@ func (a *app) view(c *ui.Context) {
 				})
 			switch {
 			case settings.Pressed():
-				settings.Background(ui.RGBA(255, 255, 255, 0.14))
+				settings.Background(pal.wash(0.14))
 			case settings.Hovered():
-				settings.Background(ui.RGBA(255, 255, 255, 0.08))
+				settings.Background(pal.wash(0.08))
 			}
 			if settings.Clicked() {
 				a.openSettings()
@@ -53,8 +55,9 @@ func (a *app) view(c *ui.Context) {
 // leftPanel 构建左侧文件选择、进度和开始/停止按钮。grow 为真时
 // 面板填满窄窗口的可用宽度，避免两侧留下大片空白。
 func (a *app) leftPanel(c *ui.Context, t *ui.Theme, translating bool, progress float64, grow bool) {
+	pal := paletteFor(t)
 	panel := ui.Column(c).Padding(15).Gap(20).Radius(10).
-		Border(1, t.Border).Background(colorPanel)
+		Border(1, t.Border).Background(pal.panel)
 	if grow {
 		panel.Grow(1)
 	} else {
@@ -62,13 +65,13 @@ func (a *app) leftPanel(c *ui.Context, t *ui.Theme, translating bool, progress f
 	}
 	panel.Children(func() {
 		zone := ui.Column(c).MinHeight(220).Padding(15).Gap(10).Radius(10).
-			Border(1, t.Border).Background(colorZone)
+			Border(1, pal.zoneEdge).Background(pal.zone)
 
 		zone.Children(func() {
 			ui.Text(c, "拖拽文件到此区域或点击浏览文件").
 				TextColor(t.TextMuted).TextAlign(ui.Center)
 			ui.TextInput(c, &a.inputFile).ReadOnly(true).
-				Background(colorInput).
+				Background(pal.input).
 				Placeholder("选择要翻译的 Excel/Word/PPT 文件…")
 			if appButton(c, "浏览文件…", false).Clicked() {
 				a.chooseInputFile()
@@ -82,7 +85,10 @@ func (a *app) leftPanel(c *ui.Context, t *ui.Theme, translating bool, progress f
 			a.acceptFile(files[0])
 		}
 
-		ui.Progress(c, progress).Height(8)
+		// 进度条用蓝色强调色填充，主界面其余控件保持灰色。
+		ui.Themed(c, progressThemeFor(t)).Children(func() {
+			ui.Progress(c, progress).Height(8)
+		})
 
 		ui.Row(c).Justify(ui.Center).Gap(20).Children(func() {
 			if appPrimaryButton(c, "开始翻译", translating).Width(80).Clicked() {
@@ -100,10 +106,11 @@ func (a *app) leftPanel(c *ui.Context, t *ui.Theme, translating bool, progress f
 
 // logPanel 构建右侧日志区，用户停留在底部时自动跟随新日志。
 func (a *app) logPanel(c *ui.Context, t *ui.Theme, logs []string) {
+	pal := paletteFor(t)
 	// 右侧内边距比其他三边小，让滚动条贴近面板边缘；滚动内容自身
 	// 仍保留左右留白，避免文字与滚动条重叠。
 	ui.Column(c).Grow(1).Gap(6).Padding(10, 4, 10, 10).Radius(10).
-		Border(1, t.Border).Background(colorPanel).Children(func() {
+		Border(1, t.Border).Background(pal.panel).Children(func() {
 		ui.Text(c, "日志").Bold()
 
 		if a.logScroll.Y >= a.logScroll.MaxY {
