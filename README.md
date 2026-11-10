@@ -1,19 +1,20 @@
 # OOXML Translator
 
-A simple tool for translating Excel, Word, and PowerPoint files with AI, preserving the original formatting.
+<a href="https://awesomemygo.dev/apps/ooxml-translator"><img src="https://awesomemygo.dev/badge.svg" height="20" alt="Listed on Awesome MyGo"></a>
+[![Release](https://img.shields.io/github/v/release/lemos1235/excel-translator)](https://github.com/lemos1235/excel-translator/releases)
+[![License](https://img.shields.io/github/license/lemos1235/excel-translator)](LICENSE)
 
-## Features
+A lightweight desktop tool for translating **XLSX**, **DOCX**, and **PPTX** documents with any OpenAI-compatible LLM, preserving the original styles and layout.
 
-- Supports **XLSX**, **DOCX**, and **PPTX**.
-- Translates cells, shapes, slides, and tables.
-- Keeps original styles and layout.
+![OOXML Translator Screenshot](demo/screenshot.png)
 
-## Configuration
+## Quick Start
 
-On first run, a config file is created at:
+1. Download a build for macOS (`.dmg`, Apple Silicon) or Windows (`.exe` / installer) from [Releases](https://github.com/lemos1235/excel-translator/releases).
+2. Open the app and click **Settings** (⚙️) to set your API key, base URL, and model.
+3. Select or drag & drop a document, then click **Start** and save the translated file.
 
-- Windows: `%APPDATA%\OOXML-Translator\config.toml`
-- macOS: `~/Library/Application Support/OOXML-Translator/config.toml`
+Settings can also be edited in `config.toml` (`%APPDATA%\OOXML-Translator\` on Windows, `~/Library/Application Support/OOXML-Translator/` on macOS):
 
 ```toml
 [llm]
@@ -27,17 +28,16 @@ cjk_only = false              # translate only CJK text
 max_concurrent_requests = 4   # concurrent LLM requests
 ```
 
-## Build
-
-The GUI uses [MyGo](https://github.com/egoist/mygo) — pure Go, no Qt or cgo.
+## Development
 
 ```bash
-go tool mygo dev        # live reload
-./build_macapp.sh       # or ./build_winapp.sh
+go tool mygo dev    # run with live reload
+./build_macapp.sh   # build for darwin/arm64
+./build_winapp.sh   # build for windows/amd64
 ```
 
-Output goes to `build/<os>-<arch>/` (`.app`/`.dmg` on macOS, `.exe`/installer on Windows).
+Output goes to `build/<os>-<arch>/`.
 
-## Screenshot
+## License
 
-![screenshot.png](demo/screenshot.png)
+[MIT](LICENSE)
