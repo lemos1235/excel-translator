@@ -1,0 +1,146 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "[0-9]*"
+      - "v[0-9]*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "要发布的版本号，例如 4.0.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Resolve the version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          tag="$INPUT_VERSION"
+          if [ -z "$tag" ]; then
+            tag="$GITHUB_REF_NAME"
+          fi
+          version="${tag#v}"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'; then
+            echo "无效的版本号: $version" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  draft:
+    name: Create the draft release
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            exit 0
+          fi
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --draft --verify-tag \
+              --title "OOXML Translator $VERSION" --generate-notes
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --draft --target "$GITHUB_SHA" \
+              --title "OOXML Translator $VERSION" --generate-notes
+          fi
+
+  build:
+    name: ${{ matrix.name }}
+    needs: [version, draft]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-latest
+            platform: darwin/arm64
+            pattern: build/darwin-arm64/*.dmg
+          - name: Windows amd64
+            os: ubuntu-latest
+            platform: windows/amd64
+            pattern: build/windows-amd64/*-setup-*.exe
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Install NSIS, for the Windows installer
+        if: matrix.platform == 'windows/amd64'
+        run: sudo apt-get update && sudo apt-get install -y nsis
+
+      - name: Set the version in mygo.json
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          jq --arg v "$VERSION" '.version = $v' mygo.json > mygo.json.tmp
+          mv mygo.json.tmp mygo.json
+
+      - name: Build
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          MYGO_LDFLAGS: -X ooxmltranslator/pkg/version.Full=${{ needs.version.outputs.version }}
+        run: go tool mygo build -platform "${{ matrix.platform }}"
+
+      - name: Upload to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          shopt -s nullglob
+          files=( ${{ matrix.pattern }} )
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "没有找到匹配 ${{ matrix.pattern }} 的产物" >&2
+            exit 1
+          fi
+          gh release upload "$TAG" "${files[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+
+  publish:
+    name: Publish the release
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add the notes and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          notes="$(mktemp)"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body -q .body > "$notes"
+          cat >> "$notes" <<'EOF'
+
+          ---
+
+          > **macOS**：应用未使用 Developer ID 签名和公证。首次打开若提示“已损坏”或无法验证开发者，可执行：
+          > `xattr -cr "/Applications/OOXML Translator.app"`
+          > 或右键点击应用，选择「打开」。
+
+          > **Windows**：安装包未签名，SmartScreen 可能提示未知发布者；选择「更多信息」→「仍要运行」。
+          EOF
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --notes-file "$notes" --draft=false

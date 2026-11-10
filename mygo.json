@@ -2,7 +2,7 @@
   "name": "OOXML Translator",
   "slug": "ooxml-translator",
   "identifier": "com.lemos.ooxmltranslator",
-  "version": "1.0.0",
+  "version": "4.0.0",
   "main": "./cmd/mygo",
   "out": "build",
   "windows": {
